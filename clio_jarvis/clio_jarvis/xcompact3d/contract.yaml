@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.1.1
+version: 0.1.2
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) DNS of the Taylor-Green vortex at Re 1600 on an

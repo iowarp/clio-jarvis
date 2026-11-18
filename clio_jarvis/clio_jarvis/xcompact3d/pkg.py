@@ -136,6 +136,7 @@ class Xcompact3d(ClioApplication):
         return Path(self.config["run_dir"]) / "data.bp5"
 
     def start(self) -> None:
+        self._clio_ensure_configured(prepare=True)
         run_dir = Path(self.config["run_dir"])
         # A rerun starts a fresh series; a viewer must not see the last run's steps.
         shutil.rmtree(self._output(), ignore_errors=True)
@@ -146,4 +147,5 @@ class Xcompact3d(ClioApplication):
         """Xcompact3d runs to its last time step."""
 
     def clean(self) -> None:
+        self._clio_ensure_configured(prepare=False)
         shutil.rmtree(self._output(), ignore_errors=True)

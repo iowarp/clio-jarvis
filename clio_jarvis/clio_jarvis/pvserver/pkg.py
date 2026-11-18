@@ -59,9 +59,9 @@ class Pvserver(ClioService):
             },
             {
                 "name": "hold",
-                "msg": "Keep start running until the server stops, so 'jarvis ppl run' serves until it is signalled",
+                "msg": "Keep start running until the server stops, so a hand-run 'jarvis ppl run' serves until it is signalled",
                 "type": bool,
-                "default": True,
+                "default": False,
             },
             {
                 "name": "env_script",
@@ -115,6 +115,7 @@ class Pvserver(ClioService):
     # -- files ---------------------------------------------------------------
 
     def _state(self, name: str) -> Path:
+        self._clio_ensure_configured(prepare=False)
         return Path(self.config["state_dir"]) / name
 
     def _read_json(self, name: str) -> dict[str, Any] | None:
@@ -138,6 +139,7 @@ class Pvserver(ClioService):
     # -- lifecycle -------------------------------------------------------------
 
     def start(self) -> None:
+        self._clio_ensure_configured(prepare=True)
         config = self.config
         state_dir = Path(config["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)

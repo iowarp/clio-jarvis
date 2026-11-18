@@ -71,7 +71,7 @@ def test_pvserver_max_lifetime_is_optional_uncapped_and_positive():
     assert "max_lifetime" not in (contract.data["parameters"].get("required") or [])
     names = {entry["name"] for entry in contract.menu}
     base = {k: v for k, v in contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)}).items() if k in names}
-    assert base["max_lifetime"] is None and base["hold"] is True
+    assert base["max_lifetime"] is None and base["hold"] is False
     contract.check_parameters(base)
     assert contract.service(base)["max_lifetime"] is None
     contract.check_parameters({**base, "max_lifetime": 10 * 365 * 86400})

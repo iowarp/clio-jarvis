@@ -85,6 +85,7 @@ class GrayScott(ClioApplication):
         return Path(self.config["run_dir"]) / "gs.bp"
 
     def start(self) -> None:
+        self._clio_ensure_configured(prepare=True)
         run_dir = Path(self.config["run_dir"])
         # A rerun starts a fresh series; a viewer must not see the last run's steps.
         shutil.rmtree(self._output(), ignore_errors=True)
@@ -95,4 +96,5 @@ class GrayScott(ClioApplication):
         """Gray-Scott runs to completion."""
 
     def clean(self) -> None:
+        self._clio_ensure_configured(prepare=False)
         shutil.rmtree(self._output(), ignore_errors=True)

@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: gray_scott
-version: 0.1.1
+version: 0.1.2
 kind: application
 summary: >-
   ADIOS2 Gray-Scott reaction-diffusion on an L x L x L grid. It writes U and V

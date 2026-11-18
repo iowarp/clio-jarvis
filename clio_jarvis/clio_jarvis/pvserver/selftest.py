@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -70,81 +71,114 @@ def _connect(work: Path, pv_env: str, port: int, tag: str) -> tuple[bool, str]:
     return ok, f"rc {result.returncode}, {png}"
 
 
-def check_relay_launch(context: dict, pv_env: str) -> None:
-    """Relay's serve launch: ``jarvis ppl run`` of pvserver with no max_lifetime or walltime.
+RUNNER = """trap '{jarvis} ppl stop; exit 0' TERM INT HUP
+{jarvis} ppl start
+while :; do sleep 60 & wait $!; done
+"""
 
-    This is the command relay's launcher runs (``jarvis ppl append
-    clio_jarvis.pvserver pkg ...`` then ``exec jarvis ppl run``). With no
-    lifetime the run must keep serving until JARVIS alone gets SIGTERM, then
-    stop pvserver, write the stop record and exit 0.
+
+def check_relay_launch(context: dict, pv_env: str, mode: str) -> None:
+    """Serve pvserver as relay does, with no max_lifetime or walltime.
+
+    ``mode`` "start" is relay's service runner: ``jarvis ppl start`` returns
+    once the server is ready, the runner holds, and SIGTERM to the runner
+    runs ``jarvis ppl stop``. ``mode`` "run" is the opt-in for a hand-run
+    ``jarvis ppl run`` with ``hold=true``: SIGTERM goes to JARVIS itself.
+    Either way the server must keep serving until signalled, then stop
+    cleanly with exit 0 and a stop record.
     """
     from clio_jarvis._contract.selftest import REPO_DIR, jarvis_command
 
     check = context["check"]
     facts = context["facts"]
-    work = Path(context["work"]) / "relay-launch"
+    tag = f"relay {mode}"
+    work = Path(context["work"]) / f"relay-{mode}"
     root = work / "jarvis"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     env = {**os.environ, "JARVIS_ROOT": str(root)}
     port = _free_port()
     args = [f"env_script={pv_env}", "nprocs=2", "persist=true", f"port={port}"]
-    log = open(work / "jarvis.log", "w", encoding="utf-8")
+    if mode == "run":
+        args.append("hold=true")
+    log_path = work / "jarvis.log"
+    log = open(log_path, "w", encoding="utf-8")
     try:
         for step in (
             ["init", str(root / "config"), str(root / "private"), str(root / "shared")],
             ["repo", "add", str(REPO_DIR)],
-            ["ppl", "create", "relay_launch"],
+            ["ppl", "create", f"relay_{mode}"],
             ["ppl", "append", "clio_jarvis.pvserver", "pkg", *args],
         ):
             result = subprocess.run(jarvis_command() + step, env=env, cwd=work, stdout=log, stderr=subprocess.STDOUT)
-            if not check(f"relay launch: jarvis {' '.join(step[:2])}", result.returncode == 0, f"rc {result.returncode}"):
+            if not check(f"{tag}: jarvis {' '.join(step[:2])}", result.returncode == 0, f"rc {result.returncode}"):
                 return
-        run = subprocess.Popen(
-            jarvis_command() + ["ppl", "run"],
-            env=env, cwd=work, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-        )
+        if mode == "start":
+            runner = work / "runner.sh"
+            runner.write_text(RUNNER.format(jarvis=shlex.join(jarvis_command())), encoding="utf-8")
+            command = ["bash", str(runner)]
+        else:
+            command = jarvis_command() + ["ppl", "run"]
+        run = subprocess.Popen(command, env=env, cwd=work, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         ready_path = None
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline and run.poll() is None and ready_path is None:
-            ready_path = next(iter(root.rglob("pvserver-ready.json")), None)
+            ready_path = next(iter(work.rglob("pvserver-ready.json")), None)
             time.sleep(0.5)
-        if not check("relay launch: ready with no max_lifetime", ready_path is not None, f"port {port}, rc {run.poll()}"):
-            run.kill()
+        if not check(f"{tag}: ready with no max_lifetime", ready_path is not None, f"port {port}, rc {run.poll()}"):
+            os.killpg(run.pid, signal.SIGKILL)
             return
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
-        check("relay launch: ready record has no lifetime", ready.get("max_lifetime") is None, ready.get("max_lifetime"))
-        record = json.loads(next(iter(root.rglob("clio-contract.json"))).read_text(encoding="utf-8"))
         check(
-            "relay launch: no max_lifetime or walltime in the resolved record",
+            f"{tag}: records under {{shared_dir}}/pvserver, not the working directory",
+            ready_path.parent.name == "pvserver"
+            and (root / "shared") in ready_path.parents
+            and not (work / "pvserver-ready.json").exists(),
+            str(ready_path),
+        )
+        check(f"{tag}: ready record has no lifetime", ready.get("max_lifetime") is None, ready.get("max_lifetime"))
+        record_path = next(iter(root.rglob("clio-contract.json")), None)
+        check(f"{tag}: clio-contract.json written", record_path is not None, str(record_path))
+        record = json.loads(record_path.read_text(encoding="utf-8")) if record_path else {"config": {}, "service": {}}
+        check(
+            f"{tag}: no max_lifetime or walltime in the resolved record",
             record["config"].get("max_lifetime") is None
             and record["config"].get("walltime") is None
             and "duration" not in (record.get("resources") or {})
             and record["service"].get("max_lifetime") is None,
-            {"config": {k: record["config"].get(k) for k in ("max_lifetime", "walltime")}, "resources": record.get("resources")},
+            {"config": {k: record["config"].get(k) for k in ("max_lifetime", "walltime", "hold")}, "resources": record.get("resources")},
         )
         held = 45
         time.sleep(held)
-        check(f"relay launch: jarvis ppl run still serving after {held} s", run.poll() is None and _listening(port), f"rc {run.poll()}")
-        ok, detail = _connect(work, pv_env, port, "relay")
-        check("relay launch: pvpython connects and renders", ok, detail)
+        if mode == "start":
+            log.flush()
+            check(f"{tag}: jarvis ppl start returned once ready (hold off)", "[START] END" in log_path.read_text(encoding="utf-8"), None)
+        check(f"{tag}: still serving after {held} s", run.poll() is None and _listening(port), f"rc {run.poll()}")
+        ok, detail = _connect(work, pv_env, port, mode)
+        check(f"{tag}: pvpython connects and renders", ok, detail)
         time.sleep(5)
-        check("relay launch: still serving after the client left", run.poll() is None and _listening(port), f"rc {run.poll()}")
+        check(f"{tag}: still serving after the client left", run.poll() is None and _listening(port), f"rc {run.poll()}")
         began = time.monotonic()
-        run.send_signal(signal.SIGTERM)  # relay's launcher signals the program only
+        run.send_signal(signal.SIGTERM)  # the launcher signals its own program only
         try:
             code = run.wait(timeout=120)
         except subprocess.TimeoutExpired:
             os.killpg(run.pid, signal.SIGKILL)
             code = run.wait()
         seconds = round(time.monotonic() - began, 1)
+        try:
+            os.killpg(run.pid, signal.SIGTERM)  # the runner's idle sleep
+        except ProcessLookupError:
+            pass
         stop_path = ready_path.with_name("pvserver-stop.json")
         stop = json.loads(stop_path.read_text(encoding="utf-8")) if stop_path.is_file() else {}
-        facts["relay_launch"] = {"port": port, "held_seconds": held, "stop_seconds": seconds, "exit_code": code, "stop": stop}
+        supervisor_gone = not ready_path.with_name("pvserver-supervisor.pid").exists()
+        facts[f"relay_{mode}"] = {"port": port, "held_seconds": held, "stop_seconds": seconds, "exit_code": code, "stop": stop}
+        what = "runs jarvis ppl stop" if mode == "start" else "to jarvis"
         check(
-            "relay launch: SIGTERM to jarvis stops pvserver and exits 0",
-            code == 0 and stop.get("reason") == "signal" and not _listening(port),
-            f"rc {code} in {seconds} s, reason {stop.get('reason')}, restarts {stop.get('restarts')}",
+            f"{tag}: SIGTERM {what}, pvserver stops, exit 0",
+            code == 0 and stop.get("reason") == "signal" and supervisor_gone and not _listening(port),
+            f"rc {code} in {seconds} s, reason {stop.get('reason')}, restarts {stop.get('restarts')}, supervisor gone {supervisor_gone}",
         )
     finally:
         log.close()
@@ -227,4 +261,5 @@ def check(context: dict) -> None:
     record_path = state / "pvserver-stop.json"
     record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
     check("SIGTERM stops it with exit 0 and a stop record", code == 0 and record.get("reason") == "signal", f"rc {code}, {record.get('reason')}")
-    check_relay_launch(context, pv_env)
+    check_relay_launch(context, pv_env, "start")
+    check_relay_launch(context, pv_env, "run")

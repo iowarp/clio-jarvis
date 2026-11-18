@@ -79,6 +79,12 @@ class _ClioPackage:
 
     def _configure(self, **kwargs: Any) -> None:
         super()._configure(**kwargs)  # type: ignore[misc]
+        resolved = self._clio_resolve(kwargs)
+        self._clio_prepare(resolved)
+        self._clio_write_record(self.clio_contract(), resolved)
+
+    def _clio_resolve(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply the contract's defaults and fill rules to ``self.config`` and check it."""
         contract = self.clio_contract()
         names = {entry["name"] for entry in contract.menu}
 
@@ -97,8 +103,24 @@ class _ClioPackage:
             for name in names
             if given.get(name) in (None, "") and resolved.get(name) not in (None, "")
         }
-        self._clio_prepare(resolved)
-        self._clio_write_record(contract, resolved)
+        return resolved
+
+    def _clio_ensure_configured(self, *, prepare: bool) -> None:
+        """Resolve the contract when this package was never configured.
+
+        ``jarvis ppl start`` and ``jarvis ppl stop`` load packages from the
+        pipeline without calling configure, so fill rules (``state_dir``,
+        ``run_dir``) would still be empty. Fills depend only on the placement,
+        so a later ``ppl stop`` in another process resolves the same paths.
+        With ``prepare``, also write the input files and ``clio-contract.json``
+        as configure would.
+        """
+        if FILLED_KEY in self.config:
+            return
+        resolved = self._clio_resolve({})
+        if prepare:
+            self._clio_prepare(resolved)
+            self._clio_write_record(self.clio_contract(), resolved)
 
     def _clio_prepare(self, config: dict[str, Any]) -> None:
         """Write the package's input files. Runs before the record is written."""
