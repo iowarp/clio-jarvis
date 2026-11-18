@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.1.0
+version: 0.1.1
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) DNS of the Taylor-Green vortex at Re 1600 on an
@@ -16,7 +16,7 @@ parameters:
     ioutput: {minimum: 1}
     dt: {exclusiveMinimum: 0}
     re: {exclusiveMinimum: 0}
-    walltime: {minimum: 60, maximum: 172800}
+    walltime: {minimum: 1}
   review: [nprocs, n, ilast, ioutput, dt, re, walltime, queue]
   fill:
     input_template: "{pkg_dir}/config/input_DNS_Re1600.i3d"

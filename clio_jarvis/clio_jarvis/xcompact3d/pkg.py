@@ -99,7 +99,7 @@ class Xcompact3d(ClioApplication):
                 "type": str,
                 "default": "xcompact3d",
             },
-            {"name": "walltime", "msg": "Wall-time limit in seconds", "type": int, "default": 3600},
+            {"name": "walltime", "msg": "Wall-time limit in seconds; absent means no limit", "type": int, "default": None, "required": False},
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 

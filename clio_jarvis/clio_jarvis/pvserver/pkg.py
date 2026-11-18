@@ -58,6 +58,12 @@ class Pvserver(ClioService):
                 "default": True,
             },
             {
+                "name": "hold",
+                "msg": "Keep start running until the server stops, so 'jarvis ppl run' serves until it is signalled",
+                "type": bool,
+                "default": True,
+            },
+            {
                 "name": "env_script",
                 "msg": "Shell script sourced before pvserver starts, such as ParaView's environment; empty means none",
                 "type": str,
@@ -69,7 +75,13 @@ class Pvserver(ClioService):
                 "type": str,
                 "default": "pvserver",
             },
-            {"name": "max_lifetime", "msg": "Seconds before the server stops itself", "type": int, "default": 14400},
+            {
+                "name": "max_lifetime",
+                "msg": "Seconds before the server stops itself; absent means it runs until stopped",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
             {"name": "start_timeout", "msg": "Seconds to wait for the port to open", "type": int, "default": 120},
             {
                 "name": "state_dir",
@@ -77,7 +89,13 @@ class Pvserver(ClioService):
                 "type": str,
                 "default": "",
             },
-            {"name": "walltime", "msg": "Wall-time limit in seconds", "type": int, "default": 14400},
+            {
+                "name": "walltime",
+                "msg": "Wall-time limit in seconds; absent means no limit",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 
@@ -134,10 +152,11 @@ class Pvserver(ClioService):
             "--port", str(int(config["port"])),
             "--nprocs", str(int(config["nprocs"])),
             "--connect-id", str(int(config["connect_id"])),
-            "--max-lifetime", str(int(config["max_lifetime"])),
             "--start-timeout", str(int(config["start_timeout"])),
             "--grace", str(self._grace()),
         ]
+        if config.get("max_lifetime") not in (None, ""):
+            argv += ["--max-lifetime", str(int(config["max_lifetime"]))]
         if config.get("persist"):
             argv.append("--persist")
         self._clio_service_exec = Exec(
@@ -155,6 +174,8 @@ class Pvserver(ClioService):
         deadline = time.monotonic() + int(config["start_timeout"]) + 15
         while True:
             if self._read_json(READY_FILE) is not None:
+                if config.get("hold"):
+                    self._hold()
                 return
             process = self._clio_service_exec.processes.get(HOST)
             if process is None or process.poll() is not None or time.monotonic() > deadline:
@@ -163,6 +184,36 @@ class Pvserver(ClioService):
         self._terminate(signal.SIGTERM)
         self._finish()
         raise RuntimeError(f"pvserver did not start; log tail:\n{self._log_tail()}")
+
+    def _hold(self) -> None:
+        """Serve until the supervisor ends; a signal to this process stops the server.
+
+        ``jarvis ppl run`` calls ``start`` and then ``stop``. Holding here keeps
+        the service up for as long as the run lasts, which is how a scheduler
+        job or relay's launcher serves it. SIGTERM, SIGINT or SIGHUP to JARVIS
+        is passed to the supervisor, which stops pvserver and writes the stop
+        record; ``stop`` then finds the supervisor already finished.
+        """
+        service = self._clio_service_exec
+        process = service.processes.get(HOST) if service is not None else None
+        if process is None:
+            return
+
+        def forward(number, _frame):
+            self._terminate(signal.SIGTERM)
+
+        previous = {}
+        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                previous[number] = signal.signal(number, forward)
+            except ValueError:  # not the main thread: the caller stops the service itself
+                break
+        try:
+            while process.poll() is None:
+                time.sleep(0.5)
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
 
     def _grace(self) -> int:
         return int(self.clio_contract().data["service"]["stop"].get("grace_seconds", 30))

@@ -330,11 +330,16 @@ class Contract:
         return parameters_schema(self.menu, self.data["parameters"])
 
     def check_parameters(self, config: Mapping[str, Any]) -> None:
-        """Refuse a configuration the parameter schema rejects."""
+        """Refuse a configuration the parameter schema rejects.
+
+        A parameter whose value is None is absent: an optional limit such as
+        ``walltime`` or ``max_lifetime`` with no value means no limit.
+        """
         import jsonschema
 
         validator = jsonschema.Draft202012Validator(self.parameters_schema())
-        errors = sorted(validator.iter_errors(dict(config)), key=str)
+        present = {name: value for name, value in config.items() if value is not None}
+        errors = sorted(validator.iter_errors(present), key=str)
         if errors:
             first = errors[0]
             where = "/".join(str(p) for p in first.absolute_path) or "(root)"
@@ -598,8 +603,8 @@ def _check_semantics(contract: Contract) -> None:
     if resources.get("node_count", 1) != 1:
         raise ContractError(package, "selftest", "must run on one node")
     duration = resources.get("duration")
-    if not isinstance(duration, int) or duration <= 0:
-        raise ContractError(package, "resources", "duration must resolve to positive seconds")
+    if duration is not None and (not isinstance(duration, int) or duration <= 0):
+        raise ContractError(package, "resources", "duration, when given, must resolve to positive seconds")
 
 
 def find_packages(repo_dir: str | Path = REPO_PACKAGES_DIR) -> list[Path]:

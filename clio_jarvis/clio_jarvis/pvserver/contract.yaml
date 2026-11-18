@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: pvserver
-version: 0.1.0
+version: 0.1.1
 kind: service
 summary: >-
   ParaView pvserver bound to 127.0.0.1 with offscreen rendering. A ParaView
@@ -8,15 +8,16 @@ summary: >-
   outputs with the reader their view descriptor names.
 
 parameters:
-  required: [nprocs, port, max_lifetime]
+  required: [nprocs, port]
   properties:
     nprocs: {minimum: 1, maximum: 1024}
     ppn: {minimum: 1, maximum: 256}
     port: {minimum: 0, maximum: 65535}
     connect_id: {minimum: 0, maximum: 2147483647}
-    max_lifetime: {minimum: 60, maximum: 172800}
+    # No default and no cap: absent means the server runs until it is stopped.
+    max_lifetime: {minimum: 1}
     start_timeout: {minimum: 5, maximum: 3600}
-    walltime: {minimum: 60, maximum: 172800}
+    walltime: {minimum: 1}
   review: [nprocs, port, connect_id, max_lifetime, walltime, queue]
   fill:
     state_dir: "{shared_dir}/pvserver"
@@ -64,6 +65,8 @@ provenance:
       url: https://www.paraview.org/download/
 
 selftest:
-  params: {nprocs: 1, ppn: 1, port: 0, max_lifetime: 600, start_timeout: 120, walltime: 900}
+  # hold false: the generic runner's 'jarvis ppl run' starts and then stops the
+  # server. selftest.py also runs relay's launch, held with no lifetime.
+  params: {nprocs: 1, ppn: 1, port: 0, hold: false, start_timeout: 120}
   max_seconds: 600
   script: selftest.py

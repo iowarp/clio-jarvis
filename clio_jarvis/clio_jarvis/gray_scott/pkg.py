@@ -50,7 +50,7 @@ class GrayScott(ClioApplication):
                 "type": str,
                 "default": "adios2_simulations_gray-scott",
             },
-            {"name": "walltime", "msg": "Wall-time limit in seconds", "type": int, "default": 1800},
+            {"name": "walltime", "msg": "Wall-time limit in seconds; absent means no limit", "type": int, "default": None, "required": False},
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 

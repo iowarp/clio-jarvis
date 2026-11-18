@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: gray_scott
-version: 0.1.0
+version: 0.1.1
 kind: application
 summary: >-
   ADIOS2 Gray-Scott reaction-diffusion on an L x L x L grid. It writes U and V
@@ -17,7 +17,7 @@ parameters:
     plotgap: {minimum: 1}
     dt: {exclusiveMinimum: 0}
     noise: {minimum: 0}
-    walltime: {minimum: 60, maximum: 172800}
+    walltime: {minimum: 1}
   review: [nprocs, L, steps, plotgap, walltime, queue]
   fill:
     run_dir: "{shared_dir}/run"

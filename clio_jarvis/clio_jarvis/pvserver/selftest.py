@@ -8,7 +8,10 @@ through 127.0.0.1, renders a sphere on the server, then sends SIGTERM.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -30,6 +33,121 @@ SaveScreenshot(png, view)
 print("PVCONNECT ok", connection.GetURI())
 Disconnect()
 """
+
+
+def _listening(port: int) -> bool:
+    """True when something listens on ``port``, read from /proc/net/tcp (never by connecting)."""
+    suffix = f":{port:04X}"
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) > 3 and fields[3] == "0A" and fields[1].endswith(suffix):
+                return True
+    return False
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _connect(work: Path, pv_env: str, port: int, tag: str) -> tuple[bool, str]:
+    client = work / "pvconnect.py"
+    client.write_text(CLIENT, encoding="utf-8")
+    png = work / f"pvserver-sphere-{tag}.png"
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1" && shift && exec "$@"', "clio-pv", pv_env,
+         "pvpython", "--force-offscreen-rendering", str(client), str(port), str(png)],
+        capture_output=True, text=True, timeout=180,
+    )
+    (work / f"pvconnect-{tag}.log").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
+    ok = result.returncode == 0 and "PVCONNECT ok" in result.stdout and png.is_file()
+    return ok, f"rc {result.returncode}, {png}"
+
+
+def check_relay_launch(context: dict, pv_env: str) -> None:
+    """Relay's serve launch: ``jarvis ppl run`` of pvserver with no max_lifetime or walltime.
+
+    This is the command relay's launcher runs (``jarvis ppl append
+    clio_jarvis.pvserver pkg ...`` then ``exec jarvis ppl run``). With no
+    lifetime the run must keep serving until JARVIS alone gets SIGTERM, then
+    stop pvserver, write the stop record and exit 0.
+    """
+    from clio_jarvis._contract.selftest import REPO_DIR, jarvis_command
+
+    check = context["check"]
+    facts = context["facts"]
+    work = Path(context["work"]) / "relay-launch"
+    root = work / "jarvis"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    env = {**os.environ, "JARVIS_ROOT": str(root)}
+    port = _free_port()
+    args = [f"env_script={pv_env}", "nprocs=2", "persist=true", f"port={port}"]
+    log = open(work / "jarvis.log", "w", encoding="utf-8")
+    try:
+        for step in (
+            ["init", str(root / "config"), str(root / "private"), str(root / "shared")],
+            ["repo", "add", str(REPO_DIR)],
+            ["ppl", "create", "relay_launch"],
+            ["ppl", "append", "clio_jarvis.pvserver", "pkg", *args],
+        ):
+            result = subprocess.run(jarvis_command() + step, env=env, cwd=work, stdout=log, stderr=subprocess.STDOUT)
+            if not check(f"relay launch: jarvis {' '.join(step[:2])}", result.returncode == 0, f"rc {result.returncode}"):
+                return
+        run = subprocess.Popen(
+            jarvis_command() + ["ppl", "run"],
+            env=env, cwd=work, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        ready_path = None
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline and run.poll() is None and ready_path is None:
+            ready_path = next(iter(root.rglob("pvserver-ready.json")), None)
+            time.sleep(0.5)
+        if not check("relay launch: ready with no max_lifetime", ready_path is not None, f"port {port}, rc {run.poll()}"):
+            run.kill()
+            return
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        check("relay launch: ready record has no lifetime", ready.get("max_lifetime") is None, ready.get("max_lifetime"))
+        record = json.loads(next(iter(root.rglob("clio-contract.json"))).read_text(encoding="utf-8"))
+        check(
+            "relay launch: no max_lifetime or walltime in the resolved record",
+            record["config"].get("max_lifetime") is None
+            and record["config"].get("walltime") is None
+            and "duration" not in (record.get("resources") or {})
+            and record["service"].get("max_lifetime") is None,
+            {"config": {k: record["config"].get(k) for k in ("max_lifetime", "walltime")}, "resources": record.get("resources")},
+        )
+        held = 45
+        time.sleep(held)
+        check(f"relay launch: jarvis ppl run still serving after {held} s", run.poll() is None and _listening(port), f"rc {run.poll()}")
+        ok, detail = _connect(work, pv_env, port, "relay")
+        check("relay launch: pvpython connects and renders", ok, detail)
+        time.sleep(5)
+        check("relay launch: still serving after the client left", run.poll() is None and _listening(port), f"rc {run.poll()}")
+        began = time.monotonic()
+        run.send_signal(signal.SIGTERM)  # relay's launcher signals the program only
+        try:
+            code = run.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            os.killpg(run.pid, signal.SIGKILL)
+            code = run.wait()
+        seconds = round(time.monotonic() - began, 1)
+        stop_path = ready_path.with_name("pvserver-stop.json")
+        stop = json.loads(stop_path.read_text(encoding="utf-8")) if stop_path.is_file() else {}
+        facts["relay_launch"] = {"port": port, "held_seconds": held, "stop_seconds": seconds, "exit_code": code, "stop": stop}
+        check(
+            "relay launch: SIGTERM to jarvis stops pvserver and exits 0",
+            code == 0 and stop.get("reason") == "signal" and not _listening(port),
+            f"rc {code} in {seconds} s, reason {stop.get('reason')}, restarts {stop.get('restarts')}",
+        )
+    finally:
+        log.close()
 
 
 def _wait_restart(state: Path, supervisor: subprocess.Popen, restarts: int = 1, timeout: float = 60) -> bool:
@@ -63,7 +181,6 @@ def check(context: dict) -> None:
             "--env-script", str(config.get("env_script") or pv_env),
             "--nprocs", str(config.get("nprocs") or 1),
             "--persist",
-            "--max-lifetime", "300",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -80,6 +197,7 @@ def check(context: dict) -> None:
     if not check("supervisor reports ready", ready is not None, ready and ready.get("url")):
         supervisor.kill()
         return
+    check("supervisor started with no max_lifetime reports none", ready.get("max_lifetime") is None, ready.get("max_lifetime"))
     try:
         client = work / "pvconnect.py"
         client.write_text(CLIENT, encoding="utf-8")
@@ -109,3 +227,4 @@ def check(context: dict) -> None:
     record_path = state / "pvserver-stop.json"
     record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
     check("SIGTERM stops it with exit 0 and a stop record", code == 0 and record.get("reason") == "signal", f"rc {code}, {record.get('reason')}")
+    check_relay_launch(context, pv_env)

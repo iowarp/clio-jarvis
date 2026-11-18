@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clio-jarvis"
-version = "0.1.0"
+version = "0.1.1"
 description = "JARVIS packages that meet the clio relay package contract: Gray-Scott, Xcompact3d and pvserver"
 readme = "README.md"
 requires-python = ">=3.10"

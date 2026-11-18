@@ -38,7 +38,58 @@ def test_contract_loads(package):
     assert len(contract.sha256) == 64
     document = contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})
     assert document["resources"]["process_count"] >= 1
-    assert document["resources"]["duration"] > 0
+    # walltime has no default: absent means no limit, so no duration is priced.
+    assert "duration" not in document["resources"]
+
+
+@pytest.mark.parametrize("package", PACKAGES)
+def test_none_defaults_are_not_required_by_jarvis(package):
+    # jarvis-cd's 'ppl append' treats default None as required unless the entry says otherwise.
+    contract = load_contract(REPO_PACKAGES_DIR / package)
+    required = set(contract.data["parameters"].get("required") or [])
+    for entry in contract.menu:
+        if entry.get("default") is None and entry["name"] not in required:
+            assert entry.get("required") is False, entry["name"]
+
+
+@pytest.mark.parametrize("package", PACKAGES)
+def test_walltime_is_optional_uncapped_and_positive(package):
+    contract = load_contract(REPO_PACKAGES_DIR / package)
+    names = {entry["name"] for entry in contract.menu}
+    base = {k: v for k, v in contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)}).items() if k in names}
+    assert base["walltime"] is None
+    contract.check_parameters(base)
+    contract.check_parameters({**base, "walltime": 10 * 365 * 86400})
+    assert contract.resources({**base, "walltime": 7})["duration"] == 7
+    for bad in (0, -5):
+        with pytest.raises(ValueError, match="walltime"):
+            contract.check_parameters({**base, "walltime": bad})
+
+
+def test_pvserver_max_lifetime_is_optional_uncapped_and_positive():
+    contract = load_contract(REPO_PACKAGES_DIR / "pvserver")
+    assert "max_lifetime" not in (contract.data["parameters"].get("required") or [])
+    names = {entry["name"] for entry in contract.menu}
+    base = {k: v for k, v in contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)}).items() if k in names}
+    assert base["max_lifetime"] is None and base["hold"] is True
+    contract.check_parameters(base)
+    assert contract.service(base)["max_lifetime"] is None
+    contract.check_parameters({**base, "max_lifetime": 10 * 365 * 86400})
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="max_lifetime"):
+            contract.check_parameters({**base, "max_lifetime": bad})
+
+
+def test_supervisor_lifetime_flag():
+    sys.path.insert(0, str(REPO_PACKAGES_DIR / "pvserver"))
+    try:
+        import supervisor
+    finally:
+        sys.path.pop(0)
+    assert supervisor.parse(["--state-dir", "x"]).max_lifetime is None
+    assert supervisor.parse(["--state-dir", "x", "--max-lifetime", "5"]).max_lifetime == 5
+    with pytest.raises(SystemExit):
+        supervisor.parse(["--state-dir", "x", "--max-lifetime", "0"])
 
 
 def _copy(package: str, tmp_path: Path) -> Path:

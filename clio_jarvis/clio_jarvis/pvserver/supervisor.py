@@ -200,7 +200,7 @@ class Supervisor:
             }
             write_json(self.state_dir / READY_FILE, ready)
             self.say(f"clio-pvserver ready port={port} url=cs://{BIND}:{port}")
-            end = time.monotonic() + args.max_lifetime if args.max_lifetime > 0 else None
+            end = time.monotonic() + args.max_lifetime if args.max_lifetime is not None else None
             while self.stop_reason is None:
                 if end is not None and time.monotonic() > end:
                     self.stop_reason = "max-lifetime"
@@ -268,6 +268,13 @@ class Supervisor:
         return server.returncode
 
 
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {value}")
+    return value
+
+
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--state-dir", required=True)
@@ -277,7 +284,12 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--nprocs", type=int, default=1)
     parser.add_argument("--connect-id", type=int, default=0)
     parser.add_argument("--persist", action="store_true", help="start a new pvserver on the same port after each client session")
-    parser.add_argument("--max-lifetime", type=int, default=14400)
+    parser.add_argument(
+        "--max-lifetime",
+        type=_positive_int,
+        default=None,
+        help="seconds before the server stops itself; omitted means it runs until stopped",
+    )
     parser.add_argument("--start-timeout", type=int, default=120)
     parser.add_argument("--grace", type=int, default=20)
     return parser.parse_args(argv)

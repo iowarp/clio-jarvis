@@ -64,7 +64,7 @@ output:
   "growing": true,
   "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 120},
   "display": {"array": "vort", "association": "POINTS", "representation": "Slice"},
-  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.1.0", "sha256": "..."}
+  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.1.1", "sha256": "..."}
 }
 ```
 
@@ -151,11 +151,17 @@ and ADIOS2, patched with `xcompact3d/build/clio_vtx_patch.py`.
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. A ParaView 6 pvserver serves one client session, then exits (`--multi-clients` is deprecated). |
 | `env_script` | empty | Script sourced before `pvserver`, such as Kitware's `pv-env.sh` |
-| `max_lifetime` | 14400 | Seconds before the server stops itself |
+| `hold` | true | `start` returns only when the server stops, so `jarvis ppl run` serves until JARVIS gets SIGTERM, SIGINT or SIGHUP. JARVIS passes the signal on, the server stops cleanly, and the run exits 0. With false, `ppl run` starts the server and stops it at once. |
+| `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
+| `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. |
 
 `pvserver` binds to 127.0.0.1 only. Reach it over an SSH tunnel. The
 supervisor writes `pvserver-ready.json` when the port is listening and
 `pvserver-stop.json` when it stops (`clio.service-stop.v1`, with the reason).
+
+Every package's `walltime` works the same way. There is no default and no
+cap, absent means no limit, and the resolved record then gives no
+`resources.duration`.
 
 ## License
 
