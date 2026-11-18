@@ -1,0 +1,69 @@
+schema: clio.package-contract.v1
+package: pvserver
+version: 0.1.0
+kind: service
+summary: >-
+  ParaView pvserver bound to 127.0.0.1 with offscreen rendering. A ParaView
+  client reaches it through an SSH tunnel to the reported port and opens clio
+  outputs with the reader their view descriptor names.
+
+parameters:
+  required: [nprocs, port, max_lifetime]
+  properties:
+    nprocs: {minimum: 1, maximum: 1024}
+    ppn: {minimum: 1, maximum: 256}
+    port: {minimum: 0, maximum: 65535}
+    connect_id: {minimum: 0, maximum: 2147483647}
+    max_lifetime: {minimum: 60, maximum: 172800}
+    start_timeout: {minimum: 5, maximum: 3600}
+    walltime: {minimum: 60, maximum: 172800}
+  review: [nprocs, port, connect_id, max_lifetime, walltime, queue]
+  fill:
+    state_dir: "{shared_dir}/pvserver"
+
+resources:
+  process_count: {param: nprocs}
+  processes_per_node: {param: ppn}
+  duration: {param: walltime}
+  queue_name: {param: queue}
+
+outputs: []
+
+progress:
+  unit: service
+  ready_pattern: '^clio-pvserver ready port=(?P<port>\d+)\b'
+
+service:
+  ports:
+    - name: paraview
+      protocol: tcp
+      port: {param: port}
+      bind: 127.0.0.1
+      health:
+        kind: tcp-listen
+        note: >-
+          Checked in /proc/net/tcp, never by connecting: pvserver serves the
+          first client that connects. Port 0 means the ready event carries the
+          chosen port.
+      protection:
+        bind: loopback
+        connect_id: {param: connect_id}
+        note: Reached only through an SSH tunnel; a nonzero connect_id must also match.
+  stop:
+    signal: SIGTERM
+    writes: "{state_dir}/pvserver-stop.json"
+    record: clio.service-stop.v1
+    grace_seconds: 30
+  max_lifetime: {param: max_lifetime}
+
+provenance:
+  inputs: []
+  upstream:
+    - name: ParaView pvserver (Kitware binary release, offscreen EGL)
+      version: "6.2.1"
+      url: https://www.paraview.org/download/
+
+selftest:
+  params: {nprocs: 1, ppn: 1, port: 0, max_lifetime: 600, start_timeout: 120, walltime: 900}
+  max_seconds: 600
+  script: selftest.py

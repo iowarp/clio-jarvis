@@ -1,0 +1,71 @@
+schema: clio.package-contract.v1
+package: xcompact3d
+version: 0.1.0
+kind: application
+summary: >-
+  Xcompact3d (Incompact3d v5.0) DNS of the Taylor-Green vortex at Re 1600 on an
+  n x n x n grid. It writes ux, uy, uz, pp, vort and critq to a growing BP5
+  output that ParaView's ADIOS2VTXReader can follow while the run goes.
+
+parameters:
+  required: [nprocs, n, ilast, ioutput, dt]
+  properties:
+    nprocs: {minimum: 1, maximum: 4096}
+    ppn: {minimum: 1, maximum: 256}
+    ilast: {minimum: 1}
+    ioutput: {minimum: 1}
+    dt: {exclusiveMinimum: 0}
+    re: {exclusiveMinimum: 0}
+    walltime: {minimum: 60, maximum: 172800}
+  review: [nprocs, n, ilast, ioutput, dt, re, walltime, queue]
+  fill:
+    input_template: "{pkg_dir}/config/input_DNS_Re1600.i3d"
+    run_dir: "{shared_dir}/run"
+
+resources:
+  process_count: {param: nprocs}
+  processes_per_node: {param: ppn}
+  duration: {param: walltime}
+  queue_name: {param: queue}
+
+outputs:
+  - name: snapshots
+    path: "{run_dir}/data.bp5"
+    path_kind: directory
+    format: adios2-bp5
+    reader: ADIOS2VTXReader
+    expected_steps: {div: [ilast, ioutput]}
+    follow: {signal: reader-time-steps, poll_seconds: 2}
+    time: {unit: simulation time, step_interval: {mul: [dt, ioutput]}}
+    display:
+      array: vort
+      association: POINTS
+      representation: Slice
+      slice_normal: [0, 0, 1]
+      color_map: Viridis (matplotlib)
+    arrays: [ux, uy, uz, pp, vort, critq]
+
+progress:
+  unit: step
+  # "Writing snapshots =>           2" is printed before snapshot 2 is written.
+  step_pattern: '^Writing snapshots =>\s*(?P<step>\d+)\s*$'
+  announces: before-write
+  output: snapshots
+  total: {div: [ilast, ioutput]}
+
+provenance:
+  inputs:
+    - "{run_dir}/input.i3d"
+    - "{run_dir}/adios2_config.xml"
+    - "{run_dir}/clio-vtk.xml"
+  upstream:
+    - name: Incompact3d v5.0 with 2DECOMP&FFT 2.0.4, with the clio VTX patch in build/clio_vtx_patch.py
+      version: "5.0"
+      url: https://github.com/xcompact3d/Incompact3d/tree/v5.0
+    - name: Incompact3d examples/TGV-Taylor-Green-vortex/input_DNS_Re1600.i3d (BSD-3-Clause, see NOTICE)
+      version: "5.0"
+      url: https://github.com/xcompact3d/Incompact3d/tree/v5.0/examples/TGV-Taylor-Green-vortex
+
+selftest:
+  params: {nprocs: 4, ppn: 4, n: 65, ilast: 200, ioutput: 20, walltime: 900}
+  max_seconds: 900

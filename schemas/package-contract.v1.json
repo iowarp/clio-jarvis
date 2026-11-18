@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/iowarp/clio-jarvis/schemas/package-contract.v1.json",
+  "title": "clio-jarvis package contract, version 1",
+  "description": "The contract.yaml beside each clio-jarvis package's pkg.py (RL40). A package that misses a part does not ship.",
+  "type": "object",
+  "required": ["schema", "package", "version", "kind", "summary", "parameters", "resources", "outputs", "progress", "provenance", "selftest"],
+  "additionalProperties": false,
+  "$defs": {
+    "param_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+    "value": {
+      "description": "A literal, a parameter reference {param: name}, or integer arithmetic over them.",
+      "oneOf": [
+        { "type": ["integer", "number", "string", "boolean"] },
+        {
+          "type": "object", "additionalProperties": false, "required": ["param"],
+          "properties": { "param": { "$ref": "#/$defs/param_name" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1,
+          "properties": {
+            "div": { "$ref": "#/$defs/operands" },
+            "mul": { "$ref": "#/$defs/operands" },
+            "add": { "$ref": "#/$defs/operands" },
+            "ceil_div": { "$ref": "#/$defs/operands" }
+          }
+        }
+      ]
+    },
+    "operands": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": { "anyOf": [ { "type": "number" }, { "$ref": "#/$defs/param_name" } ] }
+    },
+    "output": {
+      "type": "object",
+      "required": ["name", "path", "path_kind", "format", "reader"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$" },
+        "path": { "type": "string", "minLength": 1, "description": "Template over the configured parameters and {shared_dir}, for example '{outdir}/gs.bp'." },
+        "path_kind": { "enum": ["file", "directory", "glob"] },
+        "format": { "type": "string" },
+        "reader": { "type": "string" },
+        "reader_properties": { "type": "object" },
+        "expected_steps": { "$ref": "#/$defs/value" },
+        "follow": { "type": "object" },
+        "time": { "type": "object" },
+        "display": { "type": "object" },
+        "arrays": { "type": "array", "items": { "type": "string" }, "description": "Arrays the self-test expects the reader to expose." }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "clio.package-contract.v1" },
+    "package": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([.+-][0-9A-Za-z.-]+)?$" },
+    "kind": { "enum": ["application", "service"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Refines the JSON Schema derived from the package's _configure_menu.",
+      "properties": {
+        "required": { "type": "array", "items": { "$ref": "#/$defs/param_name" } },
+        "properties": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/param_name" },
+          "additionalProperties": { "type": "object" }
+        },
+        "review": { "type": "array", "items": { "$ref": "#/$defs/param_name" }, "description": "Parameters a reviewer must see on a guarded site." },
+        "fill": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/param_name" },
+          "additionalProperties": { "type": "string" },
+          "description": "Template for a parameter left empty, resolved at configure time. Only these templates may use {shared_dir}, {private_dir} or {pkg_dir}."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "PSI/J 0.9.11 resource and attribute names (RL15). duration is in seconds.",
+      "required": ["process_count", "duration"],
+      "additionalProperties": false,
+      "properties": {
+        "node_count": { "$ref": "#/$defs/value" },
+        "process_count": { "$ref": "#/$defs/value" },
+        "processes_per_node": { "$ref": "#/$defs/value" },
+        "cpu_cores_per_process": { "$ref": "#/$defs/value" },
+        "gpu_cores_per_process": { "$ref": "#/$defs/value" },
+        "exclusive_node_use": { "$ref": "#/$defs/value" },
+        "memory": { "$ref": "#/$defs/value" },
+        "duration": { "$ref": "#/$defs/value" },
+        "queue_name": { "$ref": "#/$defs/value" }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/output" },
+      "description": "Every output with its view descriptor template. A service with no outputs lists none."
+    },
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit"],
+      "properties": {
+        "unit": { "type": "string" },
+        "step_pattern": { "type": "string", "description": "Regex over one stdout line with a named group 'step'." },
+        "announces": {
+          "enum": ["before-write", "after-write"],
+          "default": "after-write",
+          "description": "Whether the step line is printed before or after the step reaches the output. With 'before-write', step k means k-1 steps are readable."
+        },
+        "output":  { "type": "string", "description": "The output each step record points at." },
+        "total": { "$ref": "#/$defs/value" },
+        "done_pattern": { "type": "string" },
+        "ready_pattern": { "type": "string", "description": "For a service: regex for the line that says the port is open." }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ports", "stop"],
+      "properties": {
+        "ports": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "protocol", "port", "health", "protection"],
+            "properties": {
+              "name": { "type": "string" },
+              "protocol": { "enum": ["tcp", "http", "ws", "mcp"] },
+              "port": { "$ref": "#/$defs/value" },
+              "bind": { "$ref": "#/$defs/value" },
+              "health": {
+                "type": "object", "additionalProperties": false, "required": ["kind"],
+                "properties": {
+                  "kind": { "enum": ["tcp-listen", "http-get"] },
+                  "path": { "type": "string" },
+                  "note": { "type": "string" }
+                }
+              },
+              "protection": {
+                "type": "object", "additionalProperties": false, "required": ["bind"],
+                "properties": {
+                  "bind": { "enum": ["loopback", "any"] },
+                  "connect_id": { "$ref": "#/$defs/value" },
+                  "note": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "stop": {
+          "type": "object", "additionalProperties": false, "required": ["signal", "writes", "record"],
+          "properties": {
+            "signal": { "enum": ["SIGTERM", "SIGINT"] },
+            "writes": { "type": "string" },
+            "record": { "const": "clio.service-stop.v1" },
+            "grace_seconds": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "max_lifetime": { "$ref": "#/$defs/value" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs"],
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Templates of the files the run reads; each is digested with SHA-256 at configure time."
+        },
+        "upstream": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name", "version"],
+            "properties": { "name": { "type": "string" }, "version": { "type": "string" }, "url": { "type": "string" }, "sha256": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "selftest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["params", "max_seconds"],
+      "properties": {
+        "params": { "type": "object" },
+        "max_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "script": { "type": "string", "description": "Optional selftest.py with check(context) for package-specific checks." }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "service" } } },
+      "then": { "required": ["service"], "properties": { "progress": { "required": ["ready_pattern"] } } },
+      "else": {
+        "not": { "required": ["service"] },
+        "properties": {
+          "outputs": { "minItems": 1 },
+          "progress": { "required": ["step_pattern", "output", "total"] }
+        }
+      }
+    }
+  ]
+}
