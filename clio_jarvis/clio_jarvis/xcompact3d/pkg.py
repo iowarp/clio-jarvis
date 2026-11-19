@@ -165,7 +165,7 @@ class Xcompact3d(ClioApplication):
             },
             {
                 "name": "run_dir",
-                "msg": "Run directory; empty means {shared_dir}/run",
+                "msg": "Folder on the site for the run: input.i3d, clio-case.json, body.stl, forces.dat and the growing snapshot output data.bp5. Set it to a folder you can read, such as the one holding the geometry, to open data.bp5 in ParaView while the run goes; empty means a folder inside the job's own directory",
                 "type": str,
                 "default": "",
             },

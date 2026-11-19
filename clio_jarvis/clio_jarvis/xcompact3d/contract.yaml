@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.2.0
+version: 0.2.1
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) incompressible flow simulation. Give it an STL
@@ -22,7 +22,9 @@ summary: >-
   vort shows the wake, and a contour of ep at 0.5 shows the body.
   clio-case.json in the run directory gives the grid, the body placement and the
   stability numbers, body.stl is the body in solver coordinates, and forces.dat
-  holds drag and lift by time.
+  holds drag and lift by time. All of these go to run_dir; set run_dir to a
+  folder you can read (beside the geometry, say) and open
+  <run_dir>/data.bp5 in ParaView as soon as the job runs to watch it grow.
 
 parameters:
   required: [nprocs, n, ilast, ioutput, dt]
@@ -41,7 +43,7 @@ parameters:
     dt: {exclusiveMinimum: 0}
     re: {exclusiveMinimum: 0}
     walltime: {minimum: 1}
-  review: [geometry, nprocs, resolution, span, angle, inflow, re, ilast, ioutput, dt, n, walltime, queue]
+  review: [geometry, run_dir, nprocs, resolution, span, angle, inflow, re, ilast, ioutput, dt, n, walltime, queue]
   fill:
     input_template: "{pkg_dir}/config/input_DNS_Re1600.i3d"
     run_dir: "{shared_dir}/run"
