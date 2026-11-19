@@ -19,12 +19,15 @@ import os
 import re
 import shlex
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
 from clio_jarvis._contract.base import ClioApplication
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
+#: Seconds between pushes of the snapshots to the file server while the run goes.
+FLUSH_SECONDS = 1.0
 BODY_STL = "body-input.stl"
 
 #: Point fields the TGV case writes in each snapshot.
@@ -287,7 +290,14 @@ class Xcompact3d(ClioApplication):
         # A rerun starts a fresh series; a viewer must not see the last run's steps.
         shutil.rmtree(self._output(), ignore_errors=True)
         command = f"{shlex.quote(self.clio_executable())} input.i3d"
-        self._clio_mpi(command, cwd=str(run_dir))
+        done = threading.Event()
+        flusher = threading.Thread(target=_flush_output, args=(self._output(), done), daemon=True)
+        flusher.start()
+        try:
+            self._clio_mpi(command, cwd=str(run_dir))
+        finally:
+            done.set()
+            flusher.join(timeout=10)
 
     def stop(self) -> None:
         """Xcompact3d runs to its last time step."""
@@ -295,3 +305,31 @@ class Xcompact3d(ClioApplication):
     def clean(self) -> None:
         self._clio_ensure_configured(prepare=False)
         shutil.rmtree(self._output(), ignore_errors=True)
+
+
+def _flush_output(output: Path, done: threading.Event) -> None:
+    """Push the run's BP5 snapshots to the file server every ``FLUSH_SECONDS``.
+
+    ADIOS2 does not sync, so on a shared file system the compute node holds
+    new snapshots in its page cache and writes them back in bursts (Linux's
+    default is 30 s). A viewer on another machine would see the run jump
+    tens of steps at a time. Syncing the data files before the metadata and
+    the index keeps every step the index names on the server. Only this
+    run's output folder is touched, and a sync of unchanged files costs
+    nothing. On several nodes this flushes only the subfiles written here.
+    """
+    while not done.wait(FLUSH_SECONDS):
+        if not output.is_dir():
+            continue
+        names = sorted(p.name for p in output.glob("data.*"))
+        for name in names + ["md.0", "mmd.0", "md.idx"]:
+            try:
+                fd = os.open(output / name, os.O_RDONLY)
+            except OSError:
+                continue
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
