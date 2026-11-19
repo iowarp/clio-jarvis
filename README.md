@@ -10,7 +10,7 @@ clio-jarvis layers on top of [jarvis-cd](https://github.com/grc-iit/jarvis-cd)
 | Package | Kind | What it does |
 |---|---|---|
 | `clio_jarvis.gray_scott` | application | ADIOS2 Gray-Scott reaction-diffusion. Writes U and V to a growing BP5 output. |
-| `clio_jarvis.xcompact3d` | application | Xcompact3d Taylor-Green vortex at Re 1600 (DNS). Writes ux, uy, uz, pp, vort and critq to a growing BP5 output. |
+| `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
 | `clio_jarvis.pvserver` | service | A ParaView 6 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
 
 ## Install
@@ -64,7 +64,7 @@ output:
   "growing": true,
   "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 120},
   "display": {"array": "vort", "association": "POINTS", "representation": "Slice"},
-  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.1.2", "sha256": "..."}
+  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.2.0", "sha256": "..."}
 }
 ```
 
@@ -130,17 +130,42 @@ the `time` variable.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `nprocs`, `ppn` | 4, 4 | MPI ranks and ranks per node |
-| `n` | 65 | Grid points per side (33, 65, 129 or 257) |
-| `ilast`, `ioutput`, `dt` | 2400, 20, 0.005 | Iterations, iterations per snapshot, time step (120 snapshots up to t = 12) |
-| `re` | 1600 | Reynolds number |
+| `geometry` | empty | STL file of the body (binary or ASCII, closed, any units). Relative paths are from the directory jarvis runs in; `{pkg_dir}` names the package. Empty means the Taylor-Green case |
+| `inflow` | 1.0 | Inflow speed U along +x |
+| `angle` | 0 | Angle of attack in degrees, nose up (a turn about z) |
+| `resolution` | 24 | Grid points per body length L |
+| `reference_length` | 0 | L in STL units; 0 means the STL's x extent |
+| `span` | auto | `periodic` (a section extruded along z, run as a thin periodic slab), `free` (a whole 3D body) or `auto` |
+| `upstream`, `downstream`, `lateral` | 3, 10, 3 | Domain margins in body lengths |
+| `n` | 65 | Grid points per side, Taylor-Green case only (33, 65, 129 or 257) |
+| `ilast`, `ioutput`, `dt` | 2400, 20, 0.005 | Iterations, iterations per snapshot, time step |
+| `re` | 1600 | Reynolds number; U L / nu in the body case |
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/data.bp5` |
 
-The case is the Taylor-Green vortex DNS at Re 1600 from the Incompact3d
-examples (`config/input_DNS_Re1600.i3d`, BSD-3, see `NOTICE`). Its vortex sheets
-roll up and break into turbulence by about t = 9, so the field changes visibly
-from snapshot to snapshot. On 4 Ares ranks the defaults write a snapshot about
-every 3.2 s, for about 6.4 minutes. Needs Xcompact3d with 2DECOMP&FFT 2.0.4
-and ADIOS2, patched with `xcompact3d/build/clio_vtx_patch.py`.
+**Body case.** Incompact3d's cylinder wake case (`itype = 5`) with the body
+from the STL: it is scaled to L = 1, turned by `angle`, and voxelised (ray
+parity, pure Python) on the solver grid into `clio-geometry.txt` and
+`clio-geometry.bin`, which the clio geometry patch reads as the immersed
+boundary and writes back as `ep`. The grid spacing is 1 / `resolution`; the
+counts are rounded up to FFT-friendly sizes. Configure refuses a `dt` past CFL
+0.2 or the viscous limit of the hyperviscous scheme and names the largest safe
+value. `clio-case.json` records the grid, body placement, solid points and
+stability numbers, `body.stl` is the body in solver coordinates, and
+`forces.dat` gets time, drag and lift from a control volume round the body. A
+NACA 4412 section at 20 degrees, Re 1000 and resolution 24 (361 x 160 x 8)
+sheds a vortex street; 7500 steps at dt 0.004 take about 6 minutes on 20 Ares
+ranks.
+
+**Taylor-Green case.** The vortex DNS at Re 1600 from the Incompact3d examples
+(`config/input_DNS_Re1600.i3d`, BSD-3, see `NOTICE`). Its vortex sheets roll up
+and break into turbulence by about t = 9. On 4 Ares ranks the defaults write a
+snapshot about every 3.2 s, for about 6.4 minutes.
+
+**Build.** `xcompact3d/build/build.sh <prefix>` builds 2DECOMP&FFT 2.0.4 and
+Incompact3d v5.0 with ADIOS2, applies `clio_vtx_patch.py` and
+`clio_geometry_patch.py`, and installs `<prefix>/bin/xcompact3d`
+(`ares/build_x3body.sbatch` runs it on Ares). Without the geometry patch the
+Taylor-Green case still runs.
 
 ### pvserver
 

@@ -10,7 +10,7 @@
 set -u
 W=$HOME/clio-relay-rework
 S=$W/w5-scratch
-export PATH=$W/opt/gray-scott/bin:$W/opt/incompact3d/bin:$W/micromamba/envs/clio/bin:$PATH
+export PATH=$W/opt/gray-scott/bin:$W/opt/incompact3d-clio/bin:$W/micromamba/envs/clio/bin:$PATH
 export OMPI_MCA_pml=ob1 OMPI_MCA_btl=self,sm
 . $W/.venv/bin/activate
 export PYTHONPATH=$W/clio-jarvis/clio_jarvis

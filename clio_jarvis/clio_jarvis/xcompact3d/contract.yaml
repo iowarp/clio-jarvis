@@ -1,23 +1,47 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.1.2
+version: 0.2.0
 kind: application
 summary: >-
-  Xcompact3d (Incompact3d v5.0) DNS of the Taylor-Green vortex at Re 1600 on an
-  n x n x n grid. It writes ux, uy, uz, pp, vort and critq to a growing BP5
-  output that ParaView's ADIOS2VTXReader can follow while the run goes.
+  Xcompact3d (Incompact3d v5.0) incompressible flow simulation. Give it an STL
+  file in geometry and it simulates uniform flow along +x past that body (a
+  wing section, a car body, a cylinder, any closed solid) with the immersed
+  boundary method; leave geometry empty for the Taylor-Green vortex at Re 1600.
+  The body is scaled to length L = 1 (its x extent, or reference_length), turned
+  by angle about z, and placed upstream body lengths from the inlet with
+  downstream body lengths of wake behind it and lateral body lengths each side.
+  A section extruded along z (span periodic) runs as a thin periodic slab and is
+  cheap; a whole 3D body (span free) costs far more. Grid spacing is 1 /
+  resolution in body lengths. Choose re as U L / nu (100 to 3000 gives laminar
+  to unsteady wakes at these resolutions), dt at most about 0.1 / (resolution x
+  inflow), and ilast so that ilast x dt x inflow covers the wake (two to three
+  domain lengths show shedding). Configure refuses an unstable dt and names the
+  largest safe one. Snapshots of ux, uy, uz, pp, vort, critq and (body case) ep,
+  the body indicator, go to a growing BP5 output that ParaView's
+  ADIOS2VTXReader follows while the run goes; a slice at mid-span coloured by
+  vort shows the wake, and a contour of ep at 0.5 shows the body.
+  clio-case.json in the run directory gives the grid, the body placement and the
+  stability numbers, body.stl is the body in solver coordinates, and forces.dat
+  holds drag and lift by time.
 
 parameters:
   required: [nprocs, n, ilast, ioutput, dt]
   properties:
     nprocs: {minimum: 1, maximum: 4096}
     ppn: {minimum: 1, maximum: 256}
+    inflow: {exclusiveMinimum: 0}
+    angle: {minimum: -90, maximum: 90}
+    resolution: {minimum: 4, maximum: 512}
+    reference_length: {minimum: 0}
+    upstream: {minimum: 0.5}
+    downstream: {minimum: 1}
+    lateral: {minimum: 0.5}
     ilast: {minimum: 1}
     ioutput: {minimum: 1}
     dt: {exclusiveMinimum: 0}
     re: {exclusiveMinimum: 0}
     walltime: {minimum: 1}
-  review: [nprocs, n, ilast, ioutput, dt, re, walltime, queue]
+  review: [geometry, nprocs, resolution, span, angle, inflow, re, ilast, ioutput, dt, n, walltime, queue]
   fill:
     input_template: "{pkg_dir}/config/input_DNS_Re1600.i3d"
     run_dir: "{shared_dir}/run"
@@ -43,6 +67,7 @@ outputs:
       representation: Slice
       slice_normal: [0, 0, 1]
       color_map: Viridis (matplotlib)
+    # Both cases; the body case adds ep.
     arrays: [ux, uy, uz, pp, vort, critq]
 
 progress:
@@ -58,8 +83,11 @@ provenance:
     - "{run_dir}/input.i3d"
     - "{run_dir}/adios2_config.xml"
     - "{run_dir}/clio-vtk.xml"
+    - "{run_dir}/clio-case.json"
   upstream:
-    - name: Incompact3d v5.0 with 2DECOMP&FFT 2.0.4, with the clio VTX patch in build/clio_vtx_patch.py
+    - name: >-
+        Incompact3d v5.0 with 2DECOMP&FFT 2.0.4, with the clio VTX patch in
+        build/clio_vtx_patch.py and the clio geometry patch in build/clio_geometry_patch.py
       version: "5.0"
       url: https://github.com/xcompact3d/Incompact3d/tree/v5.0
     - name: Incompact3d examples/TGV-Taylor-Green-vortex/input_DNS_Re1600.i3d (BSD-3-Clause, see NOTICE)
@@ -67,5 +95,16 @@ provenance:
       url: https://github.com/xcompact3d/Incompact3d/tree/v5.0/examples/TGV-Taylor-Green-vortex
 
 selftest:
-  params: {nprocs: 4, ppn: 4, n: 65, ilast: 200, ioutput: 20, walltime: 900}
+  # A cylinder of diameter 1 in a periodic span at Re 300: 181 x 90 x 8 points.
+  params:
+    nprocs: 4
+    ppn: 4
+    geometry: "{pkg_dir}/config/cylinder.stl"
+    resolution: 12
+    re: 300
+    dt: 0.005
+    ilast: 200
+    ioutput: 20
+    walltime: 900
   max_seconds: 900
+  script: selftest.py

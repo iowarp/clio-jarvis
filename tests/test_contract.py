@@ -341,3 +341,19 @@ def test_supervisor_restarts_after_a_client_session(tmp_path):
     record = yaml.safe_load((state / "pvserver-stop.json").read_text())
     assert record["reason"] == "signal" and record["restarts"] == 1
     assert counter.read_text() == "2"
+
+
+def test_xcompact3d_body_case_plans_the_selftest_cylinder():
+    from clio_jarvis.xcompact3d import body
+
+    stl = REPO_PACKAGES_DIR / "xcompact3d" / "config" / "cylinder.stl"
+    params = dict(resolution=12, angle=0.0, reference_length=0.0, span="auto", upstream=3.0,
+                  downstream=10.0, lateral=3.0, nprocs=4, inflow=1.0, re=300.0)
+    case = body.plan_body(stl, dt=0.005, **params)
+    assert case.span == "periodic" and case.grid == (181, 90, 8) and case.decomposition == (2, 2)
+    # A disc of diameter 12 points on each of the 8 planes: close to pi 6^2.
+    assert 100 * 8 < case.mask.solid < 125 * 8
+    text = body.input_i3d(case, inflow=1.0, re=300.0, dt=0.005, ilast=200, ioutput=20)
+    assert "itype = 5" in text and "iibm = 1" in text and "i2dsim = 1" in text
+    with pytest.raises(body.CaseError, match="use dt"):
+        body.plan_body(stl, dt=0.05, **params)
