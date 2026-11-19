@@ -107,15 +107,16 @@ class Xcompact3d(ClioApplication):
             {
                 "name": "resolution",
                 "msg": (
-                    "Grid points per body length L (body case); 16 shows the wake, 24 to 48 gives "
-                    "forces worth quoting, and the cost grows with its cube"
+                    "Grid points per body length L, so h = 1 / resolution (body case); 16 shows the wake, "
+                    "24 to 48 gives forces worth quoting with 6 or more points across the body's thickness, "
+                    "and the cost grows with its cube (its square for a periodic span)"
                 ),
                 "type": int,
                 "default": 24,
             },
             {
                 "name": "reference_length",
-                "msg": "Body length L in STL units; 0 means the STL's extent along x (body case)",
+                "msg": "Body length L in STL units; 0 means the STL's extent along x. Set it to the chord for a part already pitched in CAD (body case)",
                 "type": float,
                 "default": 0.0,
             },
@@ -123,8 +124,8 @@ class Xcompact3d(ClioApplication):
                 "name": "span",
                 "msg": (
                     "periodic for a section extruded along z (a wing section, a cylinder) run as a "
-                    "thin periodic slab, free for a whole 3D body with flow round its ends, auto to "
-                    "tell from the STL (body case)"
+                    "thin periodic slab with max(8, span x resolution / 2) points across the span, free "
+                    "for a whole 3D body with flow round its ends, auto to tell from the STL (body case)"
                 ),
                 "type": str,
                 "default": "auto",
@@ -140,13 +141,15 @@ class Xcompact3d(ClioApplication):
                 "default": 65,
                 "choices": [33, 65, 129, 257],
             },
-            {"name": "ilast", "msg": "Last time step", "type": int, "default": 2400},
-            {"name": "ioutput", "msg": "Time steps between two snapshots", "type": int, "default": 20},
+            {"name": "ilast", "msg": "Last time step; the simulated time is ilast x dt, and shedding shows after the flow crosses the domain two to three times", "type": int, "default": 2400},
+            {"name": "ioutput", "msg": "Time steps between two snapshots; ilast / ioutput snapshots, 50 to 200 for a smooth live view", "type": int, "default": 20},
             {
                 "name": "dt",
                 "msg": (
-                    "Time step; the body case refuses one past CFL 0.2 or the viscous limit and says "
-                    "the largest safe value"
+                    "Time step. Work it out before submitting: CFL = inflow x dt / h at most 0.2 (aim for "
+                    "0.1) and dt x nu x (2 / h^2 + 1 / dz^2) at most 0.0075, with nu = inflow / re; take "
+                    "the smaller bound (see the summary). The body case refuses an unstable dt when the "
+                    "job starts and names the largest safe value"
                 ),
                 "type": float,
                 "default": 0.005,
@@ -175,7 +178,7 @@ class Xcompact3d(ClioApplication):
                 "type": str,
                 "default": "xcompact3d",
             },
-            {"name": "walltime", "msg": "Wall-time limit in seconds; absent means no limit", "type": int, "default": None, "required": False},
+            {"name": "walltime", "msg": "Wall-time limit in seconds, about nx x ny x nz x ilast / (500000 x nprocs) on Ares plus a margin; absent means no limit", "type": int, "default": None, "required": False},
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 

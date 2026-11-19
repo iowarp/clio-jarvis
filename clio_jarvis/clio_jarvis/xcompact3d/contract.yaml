@@ -1,31 +1,67 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.2.1
+version: 0.2.2
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) incompressible flow simulation. Give it an STL
   file in geometry and it simulates uniform flow along +x past that body (a
   wing section, a car body, a cylinder, any closed solid) with the immersed
   boundary method; leave geometry empty for the Taylor-Green vortex at Re 1600.
-  The body is scaled to length L = 1 (its x extent, or reference_length), turned
-  by angle about z, and placed upstream body lengths from the inlet with
-  downstream body lengths of wake behind it and lateral body lengths each side.
-  A section extruded along z (span periodic) runs as a thin periodic slab and is
-  cheap; a whole 3D body (span free) costs far more. Grid spacing is 1 /
-  resolution in body lengths. Choose re as U L / nu (100 to 3000 gives laminar
-  to unsteady wakes at these resolutions), dt at most about 0.1 / (resolution x
-  inflow), and ilast so that ilast x dt x inflow covers the wake (two to three
-  domain lengths show shedding). Configure refuses an unstable dt and names the
-  largest safe one. Snapshots of ux, uy, uz, pp, vort, critq and (body case) ep,
-  the body indicator, go to a growing BP5 output that ParaView's
-  ADIOS2VTXReader follows while the run goes; a slice at mid-span coloured by
-  vort shows the wake, and a contour of ep at 0.5 shows the body.
-  clio-case.json in the run directory gives the grid, the body placement and the
-  stability numbers, body.stl is the body in solver coordinates, and forces.dat
-  holds drag and lift by time. All of these go to run_dir; set run_dir to a
-  folder you can read (beside the geometry, say) and open
-  <run_dir>/data.bp5 in ParaView as soon as the job runs to watch it grow.
-
+  Setting up a body case, in order.
+  Units: everything is in body lengths. The body is scaled to L = 1 (its x
+  extent, or reference_length in STL units), so the viscosity is nu = inflow /
+  re and a time unit is the time the flow takes to cross L at inflow 1. angle
+  turns the body nose up about z; if the CAD part is already pitched, set angle
+  0 and reference_length to its chord in STL units, since the x extent of a
+  pitched body is longer than its chord.
+  Grid: the body sits upstream body lengths from the inlet, with downstream
+  body lengths of wake behind it and lateral body lengths each side. The
+  spacing is h = 1 / resolution in x and y, so the grid is about (upstream +
+  body length + downstream) x resolution by (body height + 2 x lateral) x
+  resolution points, rounded up to FFT-friendly counts. span periodic runs a
+  section extruded along z as a thin periodic slab with nz = max(8, span length
+  x resolution / 2) points rounded up, so dz is about 2h, except that a span shorter than 16 /
+  resolution gets dz = span length / 8, which is finer and tightens the time
+  step; span free runs a whole 3D body with dz = h and costs far more. Aim for
+  6 or more points across the body's thickness (thickness x resolution): a 12
+  percent section at resolution 24 has about 3, enough for the wake but not
+  for forces worth quoting. The boundary layer is about L / sqrt(re) thick, so
+  a coarse grid shows the wake qualitatively, not the layer.
+  Reynolds number: re = U L / nu. Bluff bodies start to shed near re 50; 100 to
+  3000 gives laminar to unsteady wakes at these resolutions, and higher re
+  needs a finer grid than these cases afford.
+  Time step: work dt out before submitting, because configure checks it only
+  when the job starts, after any approval, and refuses an unstable one. Two
+  limits hold together. Convection: CFL = inflow x dt / h at most 0.2, aim for
+  0.1, which is dt about 0.1 / (resolution x inflow). Viscous: dt x nu x (2 /
+  h^2 + 1 / dz^2) at most 0.0075 for this scheme, which with dz = 2h is dt at
+  most 0.0033 x re / (resolution^2 x inflow), and with dz = h (span free) is dt
+  at most 0.0025 x re / (resolution^2 x inflow). Take the smaller and round it
+  down. At resolution 24, re 1000 and inflow 1 with dz = 2h that is the smaller
+  of 0.0042 and 0.0058, so dt 0.004; a 0.25 chord span at the same settings has
+  dz = 0.031 and needs dt 0.003. Low re is limited by viscosity, high re by
+  convection. clio-case.json records the cfl, diffusion_number and
+  suggested_dt of the run, and a refusal names the largest safe dt.
+  Run length and snapshots: the simulated time is ilast x dt. The wake needs
+  ilast x dt x inflow to cover two to three domain lengths before shedding
+  shows, and a bluff body sheds about every 5 / inflow time units (Strouhal
+  number near 0.2), so a few shedding cycles take 30 to 50 time units. There
+  are ilast / ioutput snapshots; 50 to 200 make a smooth live view, and each
+  holds 7 fields of nx x ny x nz doubles.
+  Cost: a run is about nx x ny x nz x ilast point-steps, and Ares runs about
+  500000 point-steps per second per MPI rank (361 x 160 x 8 points for 7500
+  steps took 6 minutes on 20 ranks), so walltime in seconds is about nx x ny x
+  nz x ilast / (500000 x nprocs); set walltime with a margin. nprocs must split
+  the grid into a 2D pencil grid; configure refuses one that cannot.
+  Outputs: snapshots of ux, uy, uz, pp, vort, critq and (body case) ep, the
+  body indicator, go to a growing BP5 output that ParaView's ADIOS2VTXReader
+  follows while the run goes; a slice at mid-span coloured by vort shows the
+  wake, and a contour of ep at 0.5 shows the body. clio-case.json in the run
+  directory gives the grid, the body placement and the stability numbers,
+  body.stl is the body in solver coordinates, and forces.dat holds drag and
+  lift by time. All of these go to run_dir; set run_dir to a folder you can
+  read (beside the geometry, say) and open <run_dir>/data.bp5 in ParaView as
+  soon as the job runs to watch it grow.
 parameters:
   required: [nprocs, n, ilast, ioutput, dt]
   properties:

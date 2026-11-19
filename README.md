@@ -149,7 +149,13 @@ parity, pure Python) on the solver grid into `clio-geometry.txt` and
 boundary and writes back as `ep`. The grid spacing is 1 / `resolution`; the
 counts are rounded up to FFT-friendly sizes. Configure refuses a `dt` past CFL
 0.2 or the viscous limit of the hyperviscous scheme and names the largest safe
-value. `clio-case.json` records the grid, body placement, solid points and
+value. The contract summary, which relay shows the agent, carries the setup
+rules so `dt` can be worked out before the job is approved: CFL = U dt / h at
+most 0.2 (aim for 0.1) and dt nu (2 / h^2 + 1 / dz^2) at most 0.0075, with h =
+1 / `resolution`, nu = U / `re`, and dz = 2h for a periodic span of at least 16
+/ `resolution` (finer for a shorter one, since the span gets at least 8 points)
+or h for a free one. It also covers run length, snapshot count and a walltime
+estimate of about nx ny nz `ilast` / (500000 `nprocs`) seconds on Ares. `clio-case.json` records the grid, body placement, solid points and
 stability numbers, `body.stl` is the body in solver coordinates, and
 `forces.dat` gets time, drag and lift from a control volume round the body. A
 NACA 4412 section at 20 degrees, Re 1000 and resolution 24 (361 x 160 x 8)
