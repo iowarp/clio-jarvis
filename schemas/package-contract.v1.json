@@ -94,10 +94,11 @@
         "processes_per_node": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["param", "default"],
+          "required": ["param", "default", "cores"],
           "properties": {
             "param": { "$ref": "#/$defs/param_name" },
-            "default": { "const": "physical_cores", "description": "An empty parameter takes the physical core count of the host that configures the run." }
+            "default": { "const": "physical_cores", "description": "An empty parameter takes the target partition's physical cores per node: the cores parameter (relay's describe reports it per partition), else, inside the job, the physical cores of the job's node. The configuring host, often a login node, is never asked." },
+            "cores": { "$ref": "#/$defs/param_name", "description": "Parameter holding the target partition's physical cores per node." }
           }
         },
         "nodes": { "$ref": "#/$defs/value" },
@@ -205,7 +206,23 @@
             "signal": { "enum": ["SIGTERM", "SIGINT"] },
             "writes": { "type": "string" },
             "record": { "const": "clio.service-stop.v1" },
-            "grace_seconds": { "type": "integer", "minimum": 1 }
+            "grace_seconds": { "type": "integer", "minimum": 1, "description": "Bounded by jarvis-cd's stop grace (20 s) so the stop record is written before KILL." }
+          }
+        },
+        "runtime": {
+          "type": "object", "additionalProperties": false, "required": ["record", "lifecycle", "endpoint"],
+          "description": "The jarvis-cd service runtime the package reports through ServiceRuntimeReporter; jarvis starts the next package once it says ready.",
+          "properties": {
+            "record": { "const": "jarvis.service-runtime.v2" },
+            "lifecycle": { "type": "array", "items": { "enum": ["starting", "ready", "degraded", "stopping", "stopped", "failed"] } },
+            "endpoint": {
+              "type": "object", "additionalProperties": false, "required": ["host", "port"],
+              "properties": {
+                "host": { "type": "string", "description": "Which node the reported host names." },
+                "port": { "$ref": "#/$defs/value" },
+                "note": { "type": "string" }
+              }
+            }
           }
         },
         "max_lifetime": { "$ref": "#/$defs/value" }

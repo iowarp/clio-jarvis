@@ -1,10 +1,15 @@
 """ParaView's pvserver as a clio-jarvis service (RL40).
 
 ``start`` launches ``supervisor.py``, which runs pvserver bound to 127.0.0.1.
-It returns once the port is listening, and the progress provider reports the
-ready port. ``stop`` sends SIGTERM; the supervisor stops pvserver and writes
-``pvserver-stop.json`` in the state directory. A client reaches the server
-through an SSH tunnel to that port.
+When JARVIS bound a service runtime, the supervisor reports it through
+jarvis-cd's ServiceRuntimeReporter (starting, ready once rank 0 accepts
+connections, stopping, stopped) with rank 0's node and port as the endpoint.
+Like builtin.paraview's service mode, a background start (the default for a
+service) holds for the service's lifetime, and ``ready`` reads that record, so
+the pipeline starts the next package once pvserver listens. Otherwise
+``start`` returns once the port is listening. ``stop`` sends SIGTERM; the
+supervisor stops pvserver and writes ``pvserver-stop.json`` in the state
+directory. A client reaches the server through an SSH tunnel to that port.
 
 pvserver comes from Spack's builtin ``paraview`` recipe through the contract's
 install query; ``jarvis ppl install`` reuses the site's MPI and Mesa and builds
@@ -15,6 +20,9 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
+import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -32,6 +40,8 @@ READY_FILE = "pvserver-ready.json"
 STOP_FILE = "pvserver-stop.json"
 PID_FILE = "pvserver-supervisor.pid"
 LOG_FILE = "pvserver.log"
+DESCRIPTOR_FILE = "dataset-descriptor.json"
+AUTHORIZATION_FILE = "service-authorization.token"
 HOST = "localhost"
 
 
@@ -43,16 +53,30 @@ class Pvserver(ClioService):
     clio_capabilities = ("paraview_server",)
 
     _clio_service_exec: Exec | None = None
+    _clio_holding: bool = False
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
             {"name": "nprocs", "msg": "pvserver processes", "type": int, "default": 1},
             {
                 "name": "ppn",
-                "msg": "pvserver processes per node; empty means the node's physical cores",
+                "msg": "pvserver processes per node; empty means cores_per_node, else the physical cores of the job's node",
                 "type": int,
                 "default": None,
                 "required": False,
+            },
+            {
+                "name": "cores_per_node",
+                "msg": "Physical cores per node of the target partition (relay's describe reports them); fills an empty ppn",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
+            {
+                "name": "dataset",
+                "msg": "Absolute path of the dataset clients open through this server (e.g. xcompact3d's data.bp5), named in the service runtime; empty means the state directory",
+                "type": str,
+                "default": "",
             },
             {"name": "port", "msg": "TCP port on 127.0.0.1; 0 picks a free port", "type": int, "default": 0},
             {
@@ -133,6 +157,51 @@ class Pvserver(ClioService):
 
     # -- lifecycle -------------------------------------------------------------
 
+    def _runtime_path(self) -> str:
+        return str(self.mod_env.get("JARVIS_SERVICE_RUNTIME_PATH") or self.env.get("JARVIS_SERVICE_RUNTIME_PATH") or "")
+
+    def _runtime_arguments(self, state_dir: Path) -> list[str]:
+        """Supervisor arguments for the service runtime JARVIS bound; none without one."""
+        if not (self._runtime_path() and self.mod_env.get("JARVIS_EXECUTION_ID")):
+            return []
+        from jarvis_cd.service_runtime import (
+            DatasetDescriptor,
+            DatasetMember,
+            ServiceRuntimeReporter,
+            calculate_dataset_fingerprint,
+        )
+
+        dataset = str(self.config.get("dataset") or "").strip()
+        if dataset and not posixpath.isabs(dataset):
+            raise ValueError(f"pvserver dataset must be an absolute path on the site, not {dataset!r}")
+        location = posixpath.normpath(dataset or Path(state_dir).resolve().as_posix())
+        suffix = posixpath.splitext(location)[1].lower()
+        kind = "live-dataset" if dataset else "paraview-server"
+        format_name = {".bp5": "adios2-bp5", ".bp": "adios2-bp"}.get(suffix, suffix.lstrip(".") or "paraview-client-server")
+        dataset_id = re.sub(r"[^A-Za-z0-9._:-]", "-", f"{self.pkg_id}.dataset").lstrip("._:-")[:256] or "pvserver.dataset"
+        members = (DatasetMember(index=0, location=location),)
+        descriptor = DatasetDescriptor(
+            dataset_id=dataset_id,
+            kind=kind,
+            format=format_name,
+            members=members,
+            fingerprint=calculate_dataset_fingerprint(
+                dataset_id=dataset_id, kind=kind, format=format_name, members=members
+            ),
+        )
+        descriptor_path = state_dir / DESCRIPTOR_FILE
+        descriptor_path.write_text(descriptor.to_json() + "\n", encoding="utf-8")
+        token_path = state_dir / AUTHORIZATION_FILE
+        token_path.unlink(missing_ok=True)
+        handle = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(handle, "w", encoding="ascii") as stream:
+            stream.write(secrets.token_hex(32) + "\n")
+        return [
+            "--descriptor", str(descriptor_path),
+            "--service-instance-id", ServiceRuntimeReporter.new_service_instance_id(),
+            "--authorization-file", str(token_path),
+        ]
+
     def start(self) -> None:
         self._clio_ensure_configured(prepare=True)
         config = self.config
@@ -147,12 +216,13 @@ class Pvserver(ClioService):
             "--executable", self.clio_executable(),
             "--port", str(int(config["port"])),
             "--nprocs", str(int(config["nprocs"])),
-            "--ppn", str(int(config.get("ppn") or 0)),
+            "--ppn", str(self.clio_ppn() or 0),
             "--hosts", ",".join(self._clio_hosts()),
             "--connect-id", str(int(config["connect_id"])),
             "--start-timeout", str(int(config["start_timeout"])),
             "--grace", str(self._grace()),
         ]
+        argv += self._runtime_arguments(state_dir)
         if config.get("max_lifetime") not in (None, ""):
             argv += ["--max-lifetime", str(int(config["max_lifetime"]))]
         if config.get("persist"):
@@ -172,8 +242,16 @@ class Pvserver(ClioService):
         deadline = time.monotonic() + int(config["start_timeout"]) + 15
         while True:
             if self._read_json(READY_FILE) is not None:
-                if config.get("hold"):
-                    self._hold()
+                background = getattr(self, "starts_in_background", None)
+                if config.get("hold") or (background is not None and background()):
+                    self._clio_holding = True
+                    try:
+                        self._hold()
+                        code = self._finish()
+                    finally:
+                        self._clio_holding = False
+                    if code not in (0, None):
+                        raise RuntimeError(f"pvserver supervisor exited with status {code}; log tail:\n{self._log_tail()}")
                 return
             process = self._clio_service_exec.processes.get(HOST)
             if process is None or process.poll() is not None or time.monotonic() > deadline:
@@ -183,14 +261,30 @@ class Pvserver(ClioService):
         self._finish()
         raise RuntimeError(f"pvserver did not start; log tail:\n{self._log_tail()}")
 
+    def ready(self) -> bool | None:
+        """The service runtime's answer when JARVIS bound one, else the state files.
+
+        True once the runtime says ready (or degraded), False once it says
+        stopped or failed, None while starting. Without a runtime the stop
+        record means False and the ready record True.
+        """
+        if self._runtime_path():
+            return super().ready()
+        if self._read_json(STOP_FILE) is not None:
+            return False
+        if self._read_json(READY_FILE) is not None:
+            return True
+        return None
+
     def _hold(self) -> None:
         """Serve until the supervisor ends; a signal to this process stops the server.
 
-        ``jarvis ppl run`` calls ``start`` and then ``stop``. Holding here keeps
-        the service up for as long as the run lasts, which is how a scheduler
-        job or relay's launcher serves it. SIGTERM, SIGINT or SIGHUP to JARVIS
-        is passed to the supervisor, which stops pvserver and writes the stop
-        record; ``stop`` then finds the supervisor already finished.
+        A background start (``Pipeline.start`` runs a service's start in a
+        thread) holds here like builtin.paraview's service mode, and so does
+        ``hold`` for a hand-run ``jarvis ppl run``. In the main thread SIGTERM,
+        SIGINT or SIGHUP to JARVIS is passed to the supervisor, which stops
+        pvserver and writes the stop record; ``stop`` sends the same SIGTERM
+        from another thread and waits for the supervisor to finish.
         """
         service = self._clio_service_exec
         process = service.processes.get(HOST) if service is not None else None
@@ -214,7 +308,7 @@ class Pvserver(ClioService):
                 signal.signal(number, handler)
 
     def _grace(self) -> int:
-        return int(self.clio_contract().data["service"]["stop"].get("grace_seconds", 30))
+        return int(self.clio_contract().data["service"]["stop"].get("grace_seconds", 15))
 
     def _terminate(self, number: int) -> None:
         pid = self._supervisor_pid()
@@ -241,13 +335,15 @@ class Pvserver(ClioService):
         return code
 
     def stop(self) -> None:
+        """SIGTERM the supervisor and wait for it; nothing running is not an error."""
         self._terminate(signal.SIGTERM)
-        if self._clio_service_exec is not None:
+        if self._clio_service_exec is not None and not self._clio_holding:
             code = self._finish()
             if code not in (0, None):
                 raise RuntimeError(f"pvserver supervisor exited with status {code}")
             return
-        # Another process started the server: wait for its stop record.
+        # The holding start (or another process) waits for the supervisor; wait
+        # for its stop record, within jarvis-cd's stop timeout.
         deadline = time.monotonic() + self._grace() + 10
         while self._supervisor_pid() is not None and time.monotonic() < deadline:
             time.sleep(0.2)

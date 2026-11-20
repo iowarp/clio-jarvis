@@ -34,7 +34,14 @@ class GrayScott(ClioApplication):
             {"name": "nprocs", "msg": "MPI processes; they split the grid into a 3D block grid (see the contract's sizing)", "type": int, "default": 4},
             {
                 "name": "ppn",
-                "msg": "MPI processes per node; empty means the physical core count of the configuring host",
+                "msg": "MPI processes per node; empty means cores_per_node, else the physical cores of the job's node",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
+            {
+                "name": "cores_per_node",
+                "msg": "Physical cores per node of the target partition (relay's describe reports them); fills an empty ppn",
                 "type": int,
                 "default": None,
                 "required": False,

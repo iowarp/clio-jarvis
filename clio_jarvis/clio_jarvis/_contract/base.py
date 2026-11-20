@@ -29,7 +29,7 @@ from jarvis_cd.deployment import (
 )
 from jarvis_cd.shell import Exec, MpiExecInfo
 
-from .spec import RESOLVED_SCHEMA, Contract, load_contract, physical_cores
+from .spec import RESOLVED_SCHEMA, Contract, in_job, job_cores_per_node, load_contract, physical_cores
 
 #: Parameters the fill rule set on the last configure, so a re-configure refills them.
 FILLED_KEY = "_clio_filled"
@@ -75,7 +75,9 @@ class _ClioPackage:
 
         ``jarvis ppl install`` plans the query in the pipeline's Spack
         environment: it reuses what the site already has and builds the rest
-        from Spack's builtin repository and the repositories named here.
+        from Spack's builtin repository and the repositories named here. Those
+        are relative to the package directory and jarvis-cd resolves them on
+        the host that loads the package, the site that runs the job.
         """
         install = self.clio_contract().install()
         menu = [dict(entry) for entry in super().configure_menu()]  # type: ignore[misc]
@@ -89,7 +91,7 @@ class _ClioPackage:
                     "msg": "Spack repositories with recipes the install_query needs beyond Spack's builtin",
                     "type": list,
                     "default": install["install_repos"],
-                    "args": [{"name": "repo", "msg": "Path of a Spack repository", "type": str}],
+                    "args": [{"name": "repo", "msg": "Spack repository directory, relative to the package directory", "type": str}],
                 }
             )
         return menu
@@ -99,8 +101,31 @@ class _ClioPackage:
             "shared_dir": str(self.shared_dir),
             "private_dir": str(self.private_dir),
             "pkg_dir": str(self.pkg_dir),
-            "physical_cores": physical_cores(),
         }
+
+    def _clio_runs_here(self) -> bool:
+        """True when the ranks run on this host only (no hostfile, or a local one)."""
+        hostfile = self.hostfile
+        return hostfile is None or not len(hostfile) or hostfile.is_local()
+
+    def clio_ppn(self) -> int | None:
+        """Ranks per node for the launch, decided on the host that launches them.
+
+        ``ppn``, else ``cores_per_node`` (the target partition's physical cores,
+        both filled at configure), else the physical cores of the job's node
+        when this runs inside a batch allocation, else this host's when the
+        ranks run here. Otherwise None, which leaves placement to mpiexec: the
+        configuring host, often a login node, is never asked.
+        """
+        sizing = self.clio_contract().data["sizing"]["processes_per_node"]
+        for name in (sizing["param"], sizing["cores"]):
+            value = self.config.get(name)
+            if value not in (None, ""):
+                return int(value)
+        cores = job_cores_per_node()
+        if cores is None and not in_job() and self._clio_runs_here():
+            cores = physical_cores()
+        return cores
 
     def _configure(self, **kwargs: Any) -> None:
         super()._configure(**kwargs)  # type: ignore[misc]
@@ -179,7 +204,7 @@ class _ClioPackage:
             command,
             MpiExecInfo(
                 nprocs=int(self.config["nprocs"]),
-                ppn=int(self.config["ppn"]) if self.config.get("ppn") else None,
+                ppn=self.clio_ppn(),
                 hostfile=self.hostfile,
                 env=mpi_safe_env(self.mod_env),
                 cwd=cwd,

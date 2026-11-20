@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.3.0
+version: 0.3.1
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) incompressible flow simulation. Give it an STL
@@ -77,6 +77,7 @@ parameters:
   properties:
     nprocs: {minimum: 1, maximum: 65536}
     ppn: {minimum: 1, maximum: 256}
+    cores_per_node: {minimum: 1, maximum: 1024}
     icheckpoint: {minimum: 0}
     initstat: {minimum: 0}
     inflow: {exclusiveMinimum: 0}
@@ -120,7 +121,7 @@ sizing:
     share, nx x ny x nz / nprocs, in the tens of thousands of points or more,
     and prefer an nprocs with a near-square split (a power of two, or a
     multiple of ppn).
-  processes_per_node: {param: ppn, default: physical_cores}
+  processes_per_node: {param: ppn, default: physical_cores, cores: cores_per_node}
   nodes: {ceil_div: [nprocs, ppn]}
   cost: >-
     walltime seconds = nx x ny x nz x ilast / (throughput x nprocs), with the

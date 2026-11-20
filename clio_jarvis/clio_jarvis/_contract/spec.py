@@ -15,6 +15,7 @@ import math
 import os
 import re
 import string
+import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -55,8 +56,54 @@ _MPI_PROVIDERS = re.compile(
 )
 
 
+#: Set inside a batch allocation by the schedulers JARVIS submits to.
+_JOB_VARIABLES = ("SLURM_JOB_ID", "PBS_JOBID", "LSB_JOBID", "FLUX_JOB_ID", "COBALT_JOBID")
+
+
+def in_job(environ: Mapping[str, str] | None = None) -> bool:
+    values = os.environ if environ is None else environ
+    return any(values.get(name) for name in _JOB_VARIABLES)
+
+
+def job_cores_per_node(environ: Mapping[str, str] | None = None) -> int | None:
+    """Physical cores per node of the job this process runs in; None outside a job.
+
+    Read on the job's node: ``lscpu`` (or /proc/cpuinfo) for the physical
+    cores, capped by SLURM_CPUS_ON_NODE, the CPUs the allocation grants here,
+    counted in cores rather than hardware threads. The batch shell runs on the
+    first node of a homogeneous partition, so this is the partition's value.
+    """
+    values = os.environ if environ is None else environ
+    if not in_job(values):
+        return None
+    cores = physical_cores()
+    granted = str(values.get("SLURM_CPUS_ON_NODE") or "").strip()
+    if granted.isdigit() and int(granted) > 0:
+        threads = max(1, (os.cpu_count() or cores) // cores)
+        cores = min(cores, max(1, int(granted) // threads))
+    return cores
+
+
+def _lscpu_cores() -> int:
+    """Distinct (socket, core) pairs from ``lscpu -p=socket,core``; 0 without lscpu."""
+    try:
+        completed = subprocess.run(
+            ["lscpu", "-p=socket,core"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if completed.returncode != 0:
+        return 0
+    pairs = {line.strip() for line in completed.stdout.splitlines() if line.strip() and not line.startswith("#")}
+    return len(pairs)
+
+
 def physical_cores() -> int:
-    """Physical cores of this host: distinct (package, core) pairs on Linux, else the CPU count."""
+    """Physical cores of this host: lscpu, else distinct (package, core) pairs in
+    /proc/cpuinfo, else the CPU count. Call it on the node that runs the ranks."""
+    counted = _lscpu_cores()
+    if counted:
+        return counted
     pairs: set[tuple[str, str]] = set()
     try:
         package = core = ""
@@ -360,12 +407,20 @@ class Contract:
         return {entry["name"]: entry.get("default") for entry in self.menu}
 
     def install(self) -> dict[str, Any]:
-        """The Spack linkage as jarvis-cd menu values, with repositories as absolute paths."""
+        """The Spack linkage as jarvis-cd menu values.
+
+        Repositories are POSIX paths relative to the package directory (the one
+        holding pkg.py), such as ``../../../spack``. jarvis-cd resolves them
+        against that directory wherever the package is loaded, which is the
+        site the job runs on, so no host's absolute path is stored.
+        """
         spec = self.data["install"]
         return {
             "install_method": spec["method"],
             "install_query": spec["query"],
-            "install_repos": [str(REPO_ROOT / repo) for repo in spec["repos"]],
+            "install_repos": [
+                Path(os.path.relpath(REPO_ROOT / repo, self.pkg_dir)).as_posix() for repo in spec["repos"]
+            ],
         }
 
     def resolve_config(
@@ -374,15 +429,17 @@ class Contract:
         """Defaults, then the given values, then the ``fill`` rule for empty ones.
 
         ``placement`` carries ``shared_dir`` and friends; only fill templates
-        may use it, and it is not part of the result. Its ``physical_cores``
-        fills an empty processes-per-node parameter (the sizing part).
+        may use it, and it is not part of the result. The sizing part's
+        ``cores`` parameter (the target partition's physical cores per node)
+        fills an empty processes-per-node parameter. Nothing here reads the
+        configuring host, which may be a login node.
         """
         merged = {**self.defaults(), **dict(config)}
         rules = self.data["parameters"].get("fill") or {}
         merged.update(fill(rules, {**dict(placement or {}), **merged}))
         ppn = self.data["sizing"]["processes_per_node"]
-        cores = (placement or {}).get("physical_cores")
-        if merged.get(ppn["param"]) in (None, "") and cores:
+        cores = merged.get(ppn["cores"])
+        if merged.get(ppn["param"]) in (None, "") and cores not in (None, ""):
             merged[ppn["param"]] = int(cores)
         return merged
 
@@ -655,7 +712,7 @@ def _check_semantics(contract: Contract) -> None:
 
     _check_install(contract)
     sizing = data["sizing"]
-    need("sizing", {sizing["processes_per_node"]["param"]}, "processes_per_node")
+    need("sizing", {sizing["processes_per_node"]["param"], sizing["processes_per_node"]["cores"]}, "processes_per_node")
     need("sizing", value_params(sizing["nodes"]), "nodes")
 
     view_names = set()

@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: pvserver
-version: 0.2.0
+version: 0.3.0
 kind: service
 summary: >-
   ParaView 5.13.1 pvserver bound to 127.0.0.1 with offscreen OSMesa rendering,
@@ -20,6 +20,7 @@ parameters:
   properties:
     nprocs: {minimum: 1, maximum: 1024}
     ppn: {minimum: 1, maximum: 256}
+    cores_per_node: {minimum: 1, maximum: 1024}
     port: {minimum: 0, maximum: 65535}
     connect_id: {minimum: 0, maximum: 2147483647}
     # No default and no cap: absent means the server runs until it is stopped.
@@ -45,7 +46,7 @@ sizing:
     renders too slowly. The ranks run on the package's hosts (its hostfile,
     narrowed by host_slice) with rank 0, the one clients reach, on the node
     that runs JARVIS; without a hostfile they share that node.
-  processes_per_node: {param: ppn, default: physical_cores}
+  processes_per_node: {param: ppn, default: physical_cores, cores: cores_per_node}
   nodes: {ceil_div: [nprocs, ppn]}
 
 outputs: []
@@ -74,7 +75,20 @@ service:
     signal: SIGTERM
     writes: "{state_dir}/pvserver-stop.json"
     record: clio.service-stop.v1
-    grace_seconds: 30
+    # Within jarvis-cd's 20 s stop grace, after which the job's tree gets KILL.
+    grace_seconds: 15
+  runtime:
+    record: jarvis.service-runtime.v2
+    lifecycle: [starting, ready, degraded, stopping, stopped, failed]
+    endpoint:
+      host: rank0-node
+      port: {param: port}
+      note: >-
+        host is the node running rank 0 (the one running JARVIS) and port the
+        port pvserver listens on. pvserver binds 127.0.0.1 there, so a client
+        reaches cs://host:port through an SSH tunnel to host. The runtime's
+        protocol field says http because jarvis-cd has no ParaView protocol
+        value; the ready message names cs://.
   max_lifetime: {param: max_lifetime}
 
 provenance:

@@ -16,11 +16,21 @@ On SIGTERM or SIGINT, at the lifetime limit, or when pvserver exits without
 being restarted, it stops the server and writes ``pvserver-stop.json``
 (clio.service-stop.v1).
 
+When JARVIS bound a service runtime (``--descriptor`` is given), it also
+reports the service through jarvis-cd's ServiceRuntimeReporter: starting once
+pvserver is launched, ready once rank 0 listens, degraded and ready again
+around a persist restart, stopping before it stops the server, and stopped or
+failed at the end. The reported endpoint is this node (rank 0's) and the port.
+jarvis-cd's ``Pkg.ready`` reads that record, and the next package in the
+pipeline starts only once it says ready.
+
 With more than one rank it starts pvserver through the mpiexec of the MPI
 JARVIS chose (JARVIS_MPI_PREFIX, JARVIS_MPI_TYPE), over ``--hosts`` with this
 node first, so rank 0 listens where the supervisor checks.
 
-Only the standard library is used, so any Python 3.9+ can run it.
+Without a service runtime only the standard library is used, so any Python
+3.9+ can run it; with one, jarvis_cd is imported (the supervisor runs under
+JARVIS's Python).
 """
 
 from __future__ import annotations
@@ -130,6 +140,54 @@ def mpi_launcher(args: argparse.Namespace) -> list[str]:
     return [launcher, "-n", nprocs]
 
 
+class RuntimeReport:
+    """The jarvis-cd service runtime of this server; a no-op without ``--descriptor``.
+
+    The endpoint host is this node, which runs rank 0, and the port is the one
+    rank 0 listens on. jarvis-cd's ServiceProtocol knows only http and https,
+    so the record says http and the messages name the cs:// endpoint.
+    """
+
+    def __init__(self, args: argparse.Namespace, port: int, log) -> None:
+        self.reporter = None
+        self.lifecycle: str | None = None
+        self.log = log
+        if not args.descriptor:
+            return
+        from jarvis_cd.service_runtime import (
+            DatasetDescriptor,
+            ServiceProtocol,
+            ServiceRuntimeAuthority,
+            ServiceRuntimeReporter,
+        )
+
+        descriptor = DatasetDescriptor.from_json(Path(args.descriptor).read_text(encoding="utf-8"))
+        token = Path(args.authorization_file).read_text(encoding="ascii").strip()
+        self.reporter = ServiceRuntimeReporter.from_environment(
+            service_instance_id=args.service_instance_id,
+            host=socket.gethostname(),
+            port=port,
+            dataset_descriptor=descriptor,
+            authority=ServiceRuntimeAuthority(scheme="bearer", token=token),
+            protocol=ServiceProtocol.HTTP,
+        )
+
+    def __call__(self, lifecycle: str, message: str) -> bool:
+        """Append ``lifecycle``; False when the record could not be written."""
+        if self.reporter is None or self.lifecycle in ("stopped", "failed"):
+            return True
+        from jarvis_cd.service_runtime import ServiceLifecycle
+
+        try:
+            self.reporter.report(ServiceLifecycle(lifecycle), message=message)
+        except Exception as error:  # the server is still stopped and the stop record written
+            self.log.write(f"# {now()} service runtime report {lifecycle} failed: {error}\n")
+            self.log.flush()
+            return False
+        self.lifecycle = lifecycle
+        return True
+
+
 class Supervisor:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -210,19 +268,30 @@ class Supervisor:
         port = args.port or free_port()
         started = now()
         log = open(self.state_dir / LOG_FILE, "a", encoding="utf-8")
+        host = socket.gethostname()
+        try:
+            runtime = RuntimeReport(args, port, log)
+        except Exception as error:
+            log.write(f"# {now()} service runtime unavailable: {error}\n")
+            self.say(f"clio-pvserver service runtime unavailable: {error}")
+            self.stop_reason = "report-failed"
+            return self.finish(log, port, started, None, 0, None)
         server, reader = self.launch(port, log)
+        if not runtime("starting", f"pvserver launched on {host}; waiting for rank 0 to listen on port {port}"):
+            self.stop_reason = "report-failed"
 
         ready_at = None
         restarts = 0
-        if self.wait_listening(server, port):
+        if self.stop_reason is None and self.wait_listening(server, port):
             ready_at = now()
         elif self.stop_reason is None:
             self.stop_reason = "failed-to-start"
 
+        endpoint = f"cs://{host}:{port}"
         if ready_at is not None:
             ready = {
                 "schema": READY_SCHEMA,
-                "host": socket.gethostname(),
+                "host": host,
                 "bind": BIND,
                 "port": port,
                 "url": f"cs://{BIND}:{port}",
@@ -231,12 +300,19 @@ class Supervisor:
                 "nprocs": args.nprocs,
                 "supervisor_pid": os.getpid(),
                 "server_pid": server.pid,
+                "service_instance_id": args.service_instance_id or None,
                 "started_at": started,
                 "ready_at": ready_at,
                 "max_lifetime": args.max_lifetime,
                 "restarts": 0,
             }
             write_json(self.state_dir / READY_FILE, ready)
+            listens = (
+                f"pvserver rank 0 accepts connections at {endpoint} (ParaView client-server protocol, "
+                f"bound to {BIND} on {host}: reach it through an SSH tunnel to {host})"
+            )
+            if not runtime("ready", listens):
+                self.stop_reason = "report-failed"
             self.say(f"clio-pvserver ready port={port} url=cs://{BIND}:{port}")
             end = time.monotonic() + args.max_lifetime if args.max_lifetime is not None else None
             while self.stop_reason is None:
@@ -248,22 +324,48 @@ class Supervisor:
                     self.wake.wait(0.5)
                     continue
                 reader.join(timeout=5)
+                # A job-wide TERM reaches pvserver and this process together:
+                # give the signal a moment to land before calling it an exit.
+                self.wake.wait(1.0)
+                if self.stop_reason is not None:
+                    break
                 # A clean exit after a client session is pvserver's normal end of
                 # session; anything else is a real failure.
                 if not (args.persist and code == 0 and self.client_seen.is_set()):
                     self.stop_reason = "server-exited"
                     break
                 restarts += 1
+                runtime("degraded", f"pvserver client session ended; restarting on port {port} (restart {restarts})")
                 server, reader = self.launch(port, log)
                 if not self.wait_listening(server, port):
                     self.stop_reason = self.stop_reason or "failed-to-restart"
                     break
                 ready.update(server_pid=server.pid, restarts=restarts, restarted_at=now())
                 write_json(self.state_dir / READY_FILE, ready)
+                if not runtime("ready", f"{listens}; restart {restarts}"):
+                    self.stop_reason = "report-failed"
+                    break
                 self.say(f"clio-pvserver restarted port={port} restarts={restarts}")
 
+        if self.stop_reason in ("signal", "max-lifetime"):
+            runtime("stopping", f"stopping pvserver at {endpoint} ({self.stop_reason})")
         server_code = self.stop_server(server)
         reader.join(timeout=5)
+        code = self.exit_code(server_code)
+        if code == 0:
+            runtime("stopped", f"pvserver at {endpoint} stopped ({self.stop_reason})")
+        else:
+            runtime("failed", f"pvserver at {endpoint} ended: {self.stop_reason}, server exit code {server_code}")
+        return self.finish(log, port, started, ready_at, restarts, server_code)
+
+    def exit_code(self, server_code: int | None) -> int:
+        if self.stop_reason in ("signal", "max-lifetime"):
+            return 0
+        if self.stop_reason == "server-exited":
+            return server_code if server_code else 0
+        return 1
+
+    def finish(self, log, port: int, started: str, ready_at: str | None, restarts: int, server_code: int | None) -> int:
         stopped = now()
         record = {
             "schema": STOP_SCHEMA,
@@ -283,13 +385,15 @@ class Supervisor:
         log.close()
         (self.state_dir / PID_FILE).unlink(missing_ok=True)
         self.say(f"clio-pvserver stopped reason={self.stop_reason}")
-        if self.stop_reason in ("signal", "max-lifetime"):
-            return 0
-        if self.stop_reason == "server-exited":
-            return server_code if server_code else 0
-        return 1
+        return self.exit_code(server_code)
 
     def stop_server(self, server: subprocess.Popen) -> int | None:
+        """TERM pvserver's process group, then KILL it after the grace.
+
+        The server runs in its own session, so the group holds mpiexec and every
+        rank on this node; mpiexec passes TERM on to the ranks it started on
+        other nodes (through ssh or srun) and exits once they have.
+        """
         if server.poll() is None:
             try:
                 os.killpg(server.pid, signal.SIGTERM)
@@ -330,8 +434,13 @@ def parse(argv: list[str]) -> argparse.Namespace:
         help="seconds before the server stops itself; omitted means it runs until stopped",
     )
     parser.add_argument("--start-timeout", type=int, default=120)
-    parser.add_argument("--grace", type=int, default=20)
+    parser.add_argument("--grace", type=int, default=15)
+    parser.add_argument("--descriptor", default="", help="dataset descriptor JSON; given when JARVIS bound a service runtime")
+    parser.add_argument("--service-instance-id", default="")
+    parser.add_argument("--authorization-file", default="", help="file holding the service's bearer token")
     args = parser.parse_args(argv)
+    if args.descriptor and not (args.service_instance_id and args.authorization_file):
+        parser.error("--descriptor needs --service-instance-id and --authorization-file")
     if args.hosts:
         try:
             args.hosts = ",".join(ordered_hosts([host for host in args.hosts.split(",") if host]))

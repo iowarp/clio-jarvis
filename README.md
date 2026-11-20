@@ -33,8 +33,8 @@ Every package declares its software as a Spack spec in its contract's
 
 | Package | `install_query` | `install_repos` |
 |---|---|---|
-| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `spack/` |
-| `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `spack/` |
+| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
+| `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -51,6 +51,12 @@ when more than one MPI fits, `jarvis ppl install` asks which one, and the
 answer reaches the launcher through `JARVIS_MPI_*`. The run then finds the
 programs on the PATH the Spack environment gives it. There is no other install
 path: no build scripts, no `executable` paths and no environment scripts.
+
+`install_repos` entries are relative to the package directory (the one holding
+`pkg.py`). jarvis-cd resolves them against that directory on the host that
+loads the package, which is the site: relay stages this repository there and
+runs `jarvis repo add`, so no path of the configuring machine is stored. Each
+entry must hold a `repo.yaml`.
 
 `spack/` is a Spack repository with namespace `clio`, written for Spack
 0.23.1:
@@ -73,13 +79,13 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 
 | Part | Holds |
 |---|---|
-| `install` | The Spack spec (`query`) and the Spack repositories (`repos`, relative to the checkout) the package installs from. They become the menu defaults `install_method: spack`, `install_query` and `install_repos`. An MPI pinned in the query is refused. |
+| `install` | The Spack spec (`query`) and the Spack repositories (`repos`, relative to the checkout) the package installs from. They become the menu defaults `install_method: spack`, `install_query` and `install_repos` (rewritten relative to the package directory). An MPI pinned in the query is refused. |
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
-| `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (default: the physical cores), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. |
+| `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (`param`, `default: physical_cores` and `cores`, the parameter with the target partition's physical cores per node), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. |
 | `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics` and `restart` outputs are reported as artifacts when the run has written them. |
 | `progress` | Stdout patterns for steps, completion and readiness. `announces: before-write` means the step line comes before that step is readable. |
-| `service` | Services only: ports, health check, protection, stop signal and stop record, maximum lifetime. |
+| `service` | Services only: ports, health check, protection, stop signal and stop record, the jarvis-cd service runtime it reports (`runtime`: record, lifecycle, endpoint), maximum lifetime. |
 | `provenance` | Input files hashed into `clio-contract.json`, and the upstream code. |
 | `selftest` | Parameters and time limit for the self-test, and an optional extra check script. |
 
@@ -158,11 +164,22 @@ Run the unit tests with `pytest`.
 
 ## Packages
 
+### Ranks per node
+
+Every package takes `ppn` (ranks per node) and `cores_per_node`. An empty
+`ppn` is filled at configure from `cores_per_node`, the target partition's
+physical cores per node, which relay's `describe` reports for each partition
+and passes in. If both are empty, the launch decides inside the job, on the
+job's node: the physical cores from `lscpu` (or `/proc/cpuinfo`), capped by
+`SLURM_CPUS_ON_NODE`. Outside a batch allocation it uses this host's physical
+cores only when every rank runs here, and otherwise leaves placement to
+`mpiexec`. The configuring host, usually a login node, never sets it.
+
 ### gray_scott
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; empty `ppn` means the physical cores of the configuring host |
+| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
 | `L` | 128 | Grid cells per side |
 | `steps`, `plotgap` | 15000, 150 | Simulation steps, and steps per output step (100 output steps) |
 | `checkpoint_freq` | 0 | Steps between checkpoints in `{run_dir}/ckpt.bp`, the `checkpoint` (restart) output; 0 means none |
@@ -175,7 +192,7 @@ about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; empty `ppn` means the physical cores of the configuring host |
+| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
 | `geometry` | empty | STL file of the body (binary or ASCII, closed, any units). Relative paths are from the directory jarvis runs in; `{pkg_dir}` names the package. Empty means the Taylor-Green case |
 | `inflow` | 1.0 | Inflow speed U along +x |
 | `angle` | 0 | Angle of attack in degrees, nose up (a turn about z) |
@@ -227,11 +244,12 @@ one. Statistics and restart files are off by default (`icheckpoint` and
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; empty `ppn` means the physical cores. Above 1 rank they start through the chosen MPI's `mpiexec`, over the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or on that node alone |
-| `port` | 0 | TCP port; 0 picks a free one, reported in the ready event |
+| `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; see [Ranks per node](#ranks-per-node). Above 1 rank they start through the chosen MPI's `mpiexec`, over the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or on that node alone |
+| `port` | 0 | TCP port; 0 picks a free one, reported in the ready event and the service runtime |
+| `dataset` | empty | Absolute path, on the site, of the dataset clients open (e.g. xcompact3d's `data.bp5`), named in the service runtime's dataset descriptor; empty means `state_dir` |
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
-| `hold` | false | Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
+| `hold` | false | A background start (jarvis-cd's default for a service, `start_mode: auto`) always holds, like builtin.paraview's service mode; this setting is for a foreground start. Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
 | `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
 | `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. |
 
@@ -242,6 +260,21 @@ builds, and the one Spack 0.23.1 prefers. The
 supervisor writes `pvserver-ready.json` when the port is listening and
 `pvserver-stop.json` when it stops (`clio.service-stop.v1`, with the reason).
 They go to `state_dir`, `{shared_dir}/pvserver` by default.
+
+When JARVIS binds a service runtime (`JARVIS_SERVICE_RUNTIME_PATH`), the
+supervisor reports through jarvis-cd's `ServiceRuntimeReporter`: `starting`
+once pvserver is launched, `ready` once rank 0 accepts connections, `degraded`
+then `ready` around a persist restart, `stopping` on SIGTERM or at
+`max_lifetime`, and `stopped` (or `failed`) at the end. The endpoint is the
+node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
+client opens `cs://<host>:<port>` through an SSH tunnel to that node. The
+record's protocol says `http`, the only kind jarvis-cd has besides `https`;
+the messages name the `cs://` endpoint. `ready()` reads that record, so in a
+pipeline such as pvserver then xcompact3d, jarvis-cd starts xcompact3d only
+once pvserver is ready. A SIGTERM to the job's process tree stops every rank:
+the supervisor TERMs pvserver's process group (mpiexec and the local ranks),
+mpiexec passes it to the other nodes, and the stop grace (15 s) is within
+jarvis-cd's 20 s before KILL.
 
 `jarvis ppl start` and `jarvis ppl stop` don't call configure. Every package
 resolves its fill rules (`state_dir`, `run_dir`) when it starts or stops
