@@ -9,6 +9,7 @@ description = "JARVIS packages that meet the clio relay package contract: Gray-S
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "BSD-3-Clause"}
+# Needs jarvis-cd 4007fd14 or newer (unreleased, after 1.8.1); see README.
 dependencies = ["jarvis-cd>=1.8.1", "pyyaml>=6", "jsonschema>=4.18"]
 
 [project.optional-dependencies]

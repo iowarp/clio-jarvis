@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: pvserver
-version: 0.3.0
+version: 0.3.1
 kind: service
 summary: >-
   ParaView 5.13.1 pvserver bound to 127.0.0.1 with offscreen OSMesa rendering,
@@ -87,8 +87,8 @@ service:
         host is the node running rank 0 (the one running JARVIS) and port the
         port pvserver listens on. pvserver binds 127.0.0.1 there, so a client
         reaches cs://host:port through an SSH tunnel to host. The runtime's
-        protocol field says http because jarvis-cd has no ParaView protocol
-        value; the ready message names cs://.
+        protocol is tcp (base_url tcp://host:port), which needs jarvis-cd
+        4007fd14 or newer; the ready message names cs://.
   max_lifetime: {param: max_lifetime}
 
 provenance:

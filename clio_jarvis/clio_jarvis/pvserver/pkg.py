@@ -167,9 +167,16 @@ class Pvserver(ClioService):
         from jarvis_cd.service_runtime import (
             DatasetDescriptor,
             DatasetMember,
+            ServiceProtocol,
             ServiceRuntimeReporter,
             calculate_dataset_fingerprint,
         )
+
+        if not hasattr(ServiceProtocol, "TCP"):
+            raise RuntimeError(
+                "pvserver reports its service runtime with protocol tcp, which needs "
+                "jarvis-cd 4007fd14 or newer (ServiceProtocol.TCP); update jarvis-cd"
+            )
 
         dataset = str(self.config.get("dataset") or "").strip()
         if dataset and not posixpath.isabs(dataset):

@@ -144,8 +144,9 @@ class RuntimeReport:
     """The jarvis-cd service runtime of this server; a no-op without ``--descriptor``.
 
     The endpoint host is this node, which runs rank 0, and the port is the one
-    rank 0 listens on. jarvis-cd's ServiceProtocol knows only http and https,
-    so the record says http and the messages name the cs:// endpoint.
+    rank 0 listens on. The protocol is tcp (jarvis-cd 4007fd14 or newer), so
+    the record's base_url is tcp://host:port and clients open cs://host:port;
+    its endpoint path fields are jarvis-cd's defaults and name no route.
     """
 
     def __init__(self, args: argparse.Namespace, port: int, log) -> None:
@@ -169,7 +170,7 @@ class RuntimeReport:
             port=port,
             dataset_descriptor=descriptor,
             authority=ServiceRuntimeAuthority(scheme="bearer", token=token),
-            protocol=ServiceProtocol.HTTP,
+            protocol=ServiceProtocol.TCP,
         )
 
     def __call__(self, lifecycle: str, message: str) -> bool:

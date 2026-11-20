@@ -7,7 +7,10 @@ parameters, resources, outputs, progress, ports or provenance.
 clio-jarvis layers on top of [jarvis-cd](https://github.com/grc-iit/jarvis-cd)
 and does not change it. Its packages install through jarvis-cd's Spack
 installer (`install_method: spack`), so they need a jarvis-cd with that
-installer and `jarvis ppl install`.
+installer and `jarvis ppl install`: jarvis-cd 4007fd14 or newer (branch
+`jaimecernuda-execution-lifecycle`, after 1.8.1). No jarvis-cd release has it
+yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
+`ServiceProtocol.TCP` when it starts and stops with an error on an older one.
 
 | Package | Kind | What it does |
 |---|---|---|
@@ -268,8 +271,8 @@ then `ready` around a persist restart, `stopping` on SIGTERM or at
 `max_lifetime`, and `stopped` (or `failed`) at the end. The endpoint is the
 node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
 client opens `cs://<host>:<port>` through an SSH tunnel to that node. The
-record's protocol says `http`, the only kind jarvis-cd has besides `https`;
-the messages name the `cs://` endpoint. `ready()` reads that record, so in a
+record's protocol is `tcp` (`base_url` `tcp://<host>:<port>`, jarvis-cd
+4007fd14 or newer); the messages name the `cs://` endpoint. `ready()` reads that record, so in a
 pipeline such as pvserver then xcompact3d, jarvis-cd starts xcompact3d only
 once pvserver is ready. A SIGTERM to the job's process tree stops every rank:
 the supervisor TERMs pvserver's process group (mpiexec and the local ranks),
