@@ -7,14 +7,18 @@ to 127.0.0.1. It waits until the port is listening, then prints
 connects to check the port, because pvserver serves the first client that
 connects.
 
-A ParaView 6 pvserver serves one client session and exits when that client
-disconnects (``--multi-clients`` is deprecated). With ``--persist`` the
+pvserver serves one client session and exits when that client disconnects
+(this package does not use ``--multi-clients``). With ``--persist`` the
 supervisor then starts a new pvserver on the same port and prints
 ``clio-pvserver restarted port=N``, so the service outlives its clients.
 
 On SIGTERM or SIGINT, at the lifetime limit, or when pvserver exits without
 being restarted, it stops the server and writes ``pvserver-stop.json``
 (clio.service-stop.v1).
+
+With more than one rank it starts pvserver through the mpiexec of the MPI
+JARVIS chose (JARVIS_MPI_PREFIX, JARVIS_MPI_TYPE), over ``--hosts`` with this
+node first, so rank 0 listens where the supervisor checks.
 
 Only the standard library is used, so any Python 3.9+ can run it.
 """
@@ -85,11 +89,45 @@ def server_command(args: argparse.Namespace, port: int) -> list[str]:
     if args.connect_id:
         command.append(f"--connect-id={args.connect_id}")
     if args.nprocs > 1:
-        # ParaView's own mpiexec (MPICH Hydra) from the environment script; one node.
-        command = ["mpiexec", "-launcher", "fork", "-n", str(args.nprocs)] + command
-    if args.env_script:
-        command = ["bash", "-c", 'source "$1" && shift && exec "$@"', "clio-pvserver", args.env_script] + command
+        command = mpi_launcher(args) + command
     return command
+
+
+def ordered_hosts(hosts: list[str]) -> list[str]:
+    """``hosts`` with this node first, so rank 0 listens where the supervisor checks."""
+    names = {socket.gethostname(), socket.gethostname().split(".")[0], socket.getfqdn(), "localhost"}
+    for index, host in enumerate(hosts):
+        if host in names or host.split(".")[0] in names:
+            return [host] + hosts[:index] + hosts[index + 1:]
+    raise ValueError(f"this node ({socket.gethostname()}) is not among the hosts {hosts}")
+
+
+def mpi_launcher(args: argparse.Namespace) -> list[str]:
+    """mpiexec of the MPI ParaView was built against, over ``--hosts`` or this node.
+
+    JARVIS's Spack installer exports the chosen MPI as JARVIS_MPI_PREFIX and
+    JARVIS_MPI_TYPE; without them mpiexec is taken from PATH.
+    """
+    nprocs = str(args.nprocs)
+    prefix = os.environ.get("JARVIS_MPI_PREFIX", "")
+    launcher = os.path.join(prefix, "bin", "mpiexec") if prefix else ""
+    if not os.path.isfile(launcher):
+        launcher = "mpiexec"
+    kind = os.environ.get("JARVIS_MPI_TYPE", "").strip().lower()
+    hosts = args.hosts.split(",") if args.hosts else []
+    ppn = args.ppn or -(-args.nprocs // max(len(hosts), 1))
+    if kind == "openmpi":
+        if not hosts:
+            return [launcher, "--host", f"localhost:{nprocs}", "-n", nprocs]
+        command = [launcher, "--host", ",".join(f"{host}:{ppn}" for host in hosts), "-x", "PATH", "-x", "LD_LIBRARY_PATH"]
+        if prefix:
+            command += ["--prefix", prefix]
+        return command + ["-n", nprocs]
+    if kind in ("mpich", "intel_mpi", "cray_mpich") or not kind:
+        if not hosts:
+            return [launcher, "-launcher", "fork", "-n", nprocs] if kind else [launcher, "-n", nprocs]
+        return [launcher, "-hosts", ",".join(hosts), "-ppn", str(ppn), "-n", nprocs]
+    return [launcher, "-n", nprocs]
 
 
 class Supervisor:
@@ -279,9 +317,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--executable", default="pvserver")
-    parser.add_argument("--env-script", default="")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--nprocs", type=int, default=1)
+    parser.add_argument("--ppn", type=int, default=0, help="ranks per host; 0 spreads nprocs evenly")
+    parser.add_argument("--hosts", default="", help="comma-separated hosts for the ranks; empty means this node")
     parser.add_argument("--connect-id", type=int, default=0)
     parser.add_argument("--persist", action="store_true", help="start a new pvserver on the same port after each client session")
     parser.add_argument(
@@ -292,7 +331,13 @@ def parse(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--start-timeout", type=int, default=120)
     parser.add_argument("--grace", type=int, default=20)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.hosts:
+        try:
+            args.hosts = ",".join(ordered_hosts([host for host in args.hosts.split(",") if host]))
+        except ValueError as error:
+            parser.error(str(error))
+    return args
 
 
 if __name__ == "__main__":

@@ -57,13 +57,12 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _connect(work: Path, pv_env: str, port: int, tag: str) -> tuple[bool, str]:
+def _connect(work: Path, pvpython: str, port: int, tag: str) -> tuple[bool, str]:
     client = work / "pvconnect.py"
     client.write_text(CLIENT, encoding="utf-8")
     png = work / f"pvserver-sphere-{tag}.png"
     result = subprocess.run(
-        ["bash", "-c", 'source "$1" && shift && exec "$@"', "clio-pv", pv_env,
-         "pvpython", "--force-offscreen-rendering", str(client), str(port), str(png)],
+        [pvpython, "--force-offscreen-rendering", str(client), str(port), str(png)],
         capture_output=True, text=True, timeout=180,
     )
     (work / f"pvconnect-{tag}.log").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
@@ -77,7 +76,7 @@ while :; do sleep 60 & wait $!; done
 """
 
 
-def check_relay_launch(context: dict, pv_env: str, mode: str) -> None:
+def check_relay_launch(context: dict, pvpython: str, mode: str) -> None:
     """Serve pvserver as relay does, with no max_lifetime or walltime.
 
     ``mode`` "start" is relay's service runner: ``jarvis ppl start`` returns
@@ -98,7 +97,7 @@ def check_relay_launch(context: dict, pv_env: str, mode: str) -> None:
     work.mkdir(parents=True)
     env = {**os.environ, "JARVIS_ROOT": str(root)}
     port = _free_port()
-    args = [f"env_script={pv_env}", "nprocs=2", "persist=true", f"port={port}"]
+    args = ["nprocs=2", "ppn=2", "persist=true", f"port={port}"]
     if mode == "run":
         args.append("hold=true")
     log_path = work / "jarvis.log"
@@ -154,7 +153,7 @@ def check_relay_launch(context: dict, pv_env: str, mode: str) -> None:
             log.flush()
             check(f"{tag}: jarvis ppl start returned once ready (hold off)", "[START] END" in log_path.read_text(encoding="utf-8"), None)
         check(f"{tag}: still serving after {held} s", run.poll() is None and _listening(port), f"rc {run.poll()}")
-        ok, detail = _connect(work, pv_env, port, mode)
+        ok, detail = _connect(work, pvpython, port, mode)
         check(f"{tag}: pvpython connects and renders", ok, detail)
         time.sleep(5)
         check(f"{tag}: still serving after the client left", run.poll() is None and _listening(port), f"rc {run.poll()}")
@@ -201,18 +200,18 @@ def _wait_restart(state: Path, supervisor: subprocess.Popen, restarts: int = 1, 
 def check(context: dict) -> None:
     check = context["check"]
     config = context["config"]
-    pv_env = context["pv_env"] or config.get("env_script") or ""
-    if not pv_env:
-        check("pvpython connects and renders", True, "skipped: no ParaView environment script")
+    pvpython = context["pvpython"]
+    if not pvpython:
+        check("pvpython connects and renders", True, "skipped: pvpython is not on PATH (spack load paraview)")
         return
+    pvserver = str(Path(pvpython).with_name("pvserver"))
     work = Path(context["work"])
     state = work / "pvserver-live"
     supervisor = subprocess.Popen(
         [
             sys.executable, str(HERE / "supervisor.py"),
             "--state-dir", str(state),
-            "--executable", str(config.get("executable") or "pvserver"),
-            "--env-script", str(config.get("env_script") or pv_env),
+            "--executable", pvserver,
             "--nprocs", str(config.get("nprocs") or 1),
             "--persist",
         ],
@@ -242,8 +241,7 @@ def check(context: dict) -> None:
                     break
             png = work / f"pvserver-sphere-{session}.png"
             result = subprocess.run(
-                ["bash", "-c", 'source "$1" && shift && exec "$@"', "clio-pv", pv_env,
-                 "pvpython", "--force-offscreen-rendering", str(client), str(ready["port"]), str(png)],
+                [pvpython, "--force-offscreen-rendering", str(client), str(ready["port"]), str(png)],
                 capture_output=True, text=True, timeout=180,
             )
             (work / f"pvconnect-{session}.log").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
@@ -261,5 +259,5 @@ def check(context: dict) -> None:
     record_path = state / "pvserver-stop.json"
     record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
     check("SIGTERM stops it with exit 0 and a stop record", code == 0 and record.get("reason") == "signal", f"rc {code}, {record.get('reason')}")
-    check_relay_launch(context, pv_env, "start")
-    check_relay_launch(context, pv_env, "run")
+    check_relay_launch(context, pvpython, "start")
+    check_relay_launch(context, pvpython, "run")

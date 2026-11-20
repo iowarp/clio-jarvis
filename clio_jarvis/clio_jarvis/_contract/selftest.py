@@ -3,10 +3,13 @@
 The run uses a private ``JARVIS_ROOT`` under the work directory, so it never
 touches the user's JARVIS state. Steps: ``jarvis init``, ``jarvis repo add``,
 ``jarvis ppl load`` of a one-package pipeline with the contract's self-test
-parameters, ``jarvis ppl run`` with a known execution id. The checks then read
+parameters, ``jarvis ppl install +check`` (the package's Spack install must
+already be satisfied; the self-test never builds it), ``jarvis ppl run`` with a
+known execution id. The checks then read
 the execution's progress and artifact records, the package's
-``clio-contract.json``, the output itself through ParaView's reader (when a
-ParaView environment script is given), and the package's own ``selftest.py``.
+``clio-contract.json``, the output itself through ParaView's reader (when
+``pvpython`` from ParaView's Spack install is on PATH), and the package's own
+``selftest.py``.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from .spec import (
     STOP_RECORD_SCHEMA,
     Contract,
     evaluate,
+    is_view,
     load_contract,
     render,
     validate_view_descriptor,
@@ -135,7 +139,6 @@ class SelfTest:
         *,
         overrides: Mapping[str, Any] | None = None,
         work: str | Path | None = None,
-        pv_env: str | None = None,
     ) -> None:
         self.contract: Contract = load_contract(REPO_PACKAGES_DIR / package)
         self.package = package
@@ -143,7 +146,8 @@ class SelfTest:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         base = Path(work).expanduser() if work else Path.home() / ".cache" / "clio-jarvis-selftest"
         self.work = (base / f"{package}-{stamp}").resolve()
-        self.pv_env = str(Path(pv_env).expanduser()) if pv_env else ""
+        # ParaView's Spack install, loaded in the calling shell (spack load paraview).
+        self.pvpython = shutil.which("pvpython") or ""
         self.jarvis_root = self.work / "jarvis"
         self.pipeline = f"clio-selftest-{package}"
         self.execution_id = f"selftest-{package}-{stamp}".replace("_", "-")
@@ -238,6 +242,18 @@ class SelfTest:
         result = self.jarvis("ppl", "load", "yaml", str(pipeline_file), log="jarvis-ppl-load.log")
         if not report.check("jarvis ppl load", result.returncode == 0, result.stderr[-400:] if result.returncode else None):
             raise CheckFailed("jarvis ppl load failed")
+        # The software comes from the package's Spack linkage only; the self-test never builds it.
+        result = self.jarvis("ppl", "install", "+check", "+json", timeout=900, log="jarvis-ppl-install-check.log")
+        install = _last_json(result.stdout)
+        report.facts["install"] = install.get("installers")
+        if not report.check(
+            "Spack install satisfied",
+            result.returncode == 0 and install.get("satisfied") is True,
+            None if install.get("satisfied") else (install.get("issues") or result.stderr[-400:]),
+        ):
+            raise CheckFailed(
+                f"{self.contract.data['install']['query']!r} is not installed: run jarvis ppl install"
+            )
         limit = int(self.contract.data["selftest"]["max_seconds"])
         began = time.monotonic()
         result = self.jarvis(
@@ -327,6 +343,9 @@ class SelfTest:
         for event in artifacts:
             final[event.get("logical_name", "")] = event
         for output in self.contract.data["outputs"]:
+            if not is_view(output):
+                # Statistics and restart are written only when the run asks for them.
+                continue
             event = final.get(output["name"])
             path = render(output["path"], config)
             report.check(
@@ -343,17 +362,13 @@ class SelfTest:
         report = self.report
         if output.get("reader") != "ADIOS2VTXReader":
             return
-        if not self.pv_env:
-            report.check("ParaView reader check", True, "skipped: no --pv-env given")
+        if not self.pvpython:
+            report.check("ParaView reader check", True, "skipped: no pvpython on PATH (spack load paraview)")
             return
         arrays = list(output.get("arrays") or [])
         array = (output.get("display") or {}).get("array") or (arrays[0] if arrays else "")
         png = self.work / f"{output['name']}-last.png"
-        script = 'source "$1" && shift && exec "$@"'
-        command = [
-            "bash", "-c", script, "clio-pv", self.pv_env,
-            "pvpython", "--force-offscreen-rendering", str(VTXCHECK), path, array, str(png),
-        ]
+        command = [self.pvpython, "--force-offscreen-rendering", str(VTXCHECK), path, array, str(png)]
         result = subprocess.run(command, capture_output=True, text=True, timeout=600)
         (self.work / f"vtxcheck-{output['name']}.log").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
         line = next((l for l in result.stdout.splitlines() if l.startswith("VTXCHECK {")), None)
@@ -429,7 +444,7 @@ class SelfTest:
             "execution_root": root,
             "progress": progress,
             "artifacts": artifacts,
-            "pv_env": self.pv_env,
+            "pvpython": self.pvpython,
             "work": self.work,
             "check": self.report.check,
             "facts": self.report.facts,

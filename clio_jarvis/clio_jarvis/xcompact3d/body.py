@@ -1,7 +1,8 @@
 """Flow past an STL body: placement, grid, voxel mask and input.i3d.
 
 The body case is Incompact3d's cylinder wake case (``itype = 5``) with the
-clio geometry patch (``build/clio_geometry_patch.py``): a uniform inflow along
+clio geometry patch (the ``+clio`` variant of the ``clio.xcompact3d`` Spack
+recipe): a uniform inflow along
 +x, a convective outflow, periodic sides, and the body immersed through the
 immersed boundary method from a voxel mask (``clio-geometry.txt`` and
 ``clio-geometry.bin``).
@@ -390,7 +391,17 @@ def plan_body(
     )
 
 
-def input_i3d(case: BodyCase, *, inflow: float, re: float, dt: float, ilast: int, ioutput: int) -> str:
+def input_i3d(
+    case: BodyCase,
+    *,
+    inflow: float,
+    re: float,
+    dt: float,
+    ilast: int,
+    ioutput: int,
+    icheckpoint: int = 100000000,
+    initstat: int = 100000000,
+) -> str:
     nx, ny, nz = case.grid
     xlx, yly, zlz = case.domain
     f = case.force_volume
@@ -446,7 +457,7 @@ itimescheme = 3
 
 &InOutParam
 irestart = 0
-icheckpoint = 100000000
+icheckpoint = {icheckpoint}
 ioutput = {ioutput}
 ilist = {max(1, ioutput // 5)}
 nvisu = 1
@@ -454,7 +465,7 @@ nvisu = 1
 
 &Statistics
 nstat = 1
-initstat = 100000000
+initstat = {initstat}
 /End
 
 &ScalarParam

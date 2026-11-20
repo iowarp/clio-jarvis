@@ -2,7 +2,10 @@
 
     python -m clio_jarvis validate [PACKAGE ...]
     python -m clio_jarvis describe PACKAGE [--set name=value ...]
-    python -m clio_jarvis selftest PACKAGE [--set name=value ...] [--work DIR] [--pv-env SCRIPT]
+    python -m clio_jarvis selftest PACKAGE [--set name=value ...] [--work DIR]
+
+The self-test reads the output with pvpython when ParaView's Spack install is
+loaded (``spack load paraview``) in the calling shell.
 """
 
 from __future__ import annotations
@@ -40,7 +43,6 @@ def main(argv: list[str] | None = None) -> int:
     selftest.add_argument("package")
     selftest.add_argument("--set", action="append", default=[], metavar="NAME=VALUE")
     selftest.add_argument("--work", help="parent directory for the run (default ~/.cache/clio-jarvis-selftest)")
-    selftest.add_argument("--pv-env", help="script that puts ParaView's pvpython on PATH, for the reader checks")
     args = parser.parse_args(argv)
 
     if args.command == "validate":
@@ -55,9 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from ._contract.selftest import SelfTest
 
-    report = SelfTest(
-        args.package, overrides=parse_overrides(args.set), work=args.work, pv_env=args.pv_env
-    ).run()
+    report = SelfTest(args.package, overrides=parse_overrides(args.set), work=args.work).run()
     return 0 if report.passed else 1
 
 

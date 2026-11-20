@@ -5,13 +5,15 @@ relay reads before it runs anything, so relay never has to guess a package's
 parameters, resources, outputs, progress, ports or provenance.
 
 clio-jarvis layers on top of [jarvis-cd](https://github.com/grc-iit/jarvis-cd)
-1.8.1 and does not change it.
+and does not change it. Its packages install through jarvis-cd's Spack
+installer (`install_method: spack`), so they need a jarvis-cd with that
+installer and `jarvis ppl install`.
 
 | Package | Kind | What it does |
 |---|---|---|
 | `clio_jarvis.gray_scott` | application | ADIOS2 Gray-Scott reaction-diffusion. Writes U and V to a growing BP5 output. |
 | `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
-| `clio_jarvis.pvserver` | service | A ParaView 6 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
+| `clio_jarvis.pvserver` | service | A ParaView 5.13.1 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
 
 ## Install
 
@@ -21,7 +23,46 @@ pip install -e clio-jarvis[test]
 jarvis repo add $PWD/clio-jarvis/clio_jarvis
 ```
 
-The packages read `schemas/` from the checkout, so install from a checkout.
+The packages read `schemas/` and `spack/` from the checkout, so install from a
+checkout.
+
+### Software
+
+Every package declares its software as a Spack spec in its contract's
+`install` part, and its configure menu defaults to that spec:
+
+| Package | `install_query` | `install_repos` |
+|---|---|---|
+| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `spack/` |
+| `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `spack/` |
+| `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
+
+```bash
+jarvis ppl install +check   # what is already there, what would be built
+jarvis ppl install          # build what is missing into the pipeline's Spack environment
+```
+
+jarvis-cd finds each spec first and builds only what is missing, in a Spack
+environment per pipeline with its `spack.lock`. A user Spack that has the
+site's Spack database as an upstream, or the site's modules as externals,
+reuses what the site already has, such as its MPI, ADIOS2 and Mesa, and builds
+the rest, ParaView included. MPI is always the `mpi` virtual and never pinned:
+when more than one MPI fits, `jarvis ppl install` asks which one, and the
+answer reaches the launcher through `JARVIS_MPI_*`. The run then finds the
+programs on the PATH the Spack environment gives it. There is no other install
+path: no build scripts, no `executable` paths and no environment scripts.
+
+`spack/` is a Spack repository with namespace `clio`, written for Spack
+0.23.1:
+
+| Recipe | What it adds |
+|---|---|
+| `decomp2d-fft@2.0.4` | 2DECOMP&FFT, variants `io=mpi\|adios2` and `fft=generic\|fftw`. With `io=adios2` it fixes the `.bp5` extension of ADIOS2 output. `+clio` (needs `io=adios2`) adds the VTX metadata routines that `xcompact3d +clio` calls. |
+| `xcompact3d@5.0` | Incompact3d v5.0. `+clio` applies the VTX attribute patch (so ParaView's ADIOS2VTXReader opens `data.bp5`) and the geometry patch (the STL immersed boundary) in `patch()`. Without `+clio` the Taylor-Green case still runs. |
+| `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, built against an installed ADIOS2 2.10. `+clio` adds a double `time` and points the `vtk.xml` TIME array at it, so the reader shows model time. |
+
+A package's sha256 covers its Spack repositories too, so a recipe change is a
+new package version.
 
 ## The contract
 
@@ -32,9 +73,11 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 
 | Part | Holds |
 |---|---|
+| `install` | The Spack spec (`query`) and the Spack repositories (`repos`, relative to the checkout) the package installs from. They become the menu defaults `install_method: spack`, `install_query` and `install_repos`. An MPI pinned in the query is refused. |
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
-| `outputs` | One entry per output: path, format, reader, expected steps and display. Each becomes a view descriptor. |
+| `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (default: the physical cores), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. |
+| `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics` and `restart` outputs are reported as artifacts when the run has written them. |
 | `progress` | Stdout patterns for steps, completion and readiness. `announces: before-write` means the step line comes before that step is readable. |
 | `service` | Services only: ports, health check, protection, stop signal and stop record, maximum lifetime. |
 | `provenance` | Input files hashed into `clio-contract.json`, and the upstream code. |
@@ -48,7 +91,7 @@ package 'gray_scott' refused: contract part 'outputs' is missing
 
 ### View descriptors
 
-Every output yields a document that follows `schemas/view-descriptor.v1.json`
+Every snapshots output yields a document that follows `schemas/view-descriptor.v1.json`
 (`clio.view-descriptor.v1`). The ParaView view uses it to open and follow the
 output:
 
@@ -64,7 +107,7 @@ output:
   "growing": true,
   "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 120},
   "display": {"array": "vort", "association": "POINTS", "representation": "Slice"},
-  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.2.0", "sha256": "..."}
+  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.3.0", "sha256": "..."}
 }
 ```
 
@@ -82,25 +125,29 @@ digests and the package's sha256.
 ```
 python -m clio_jarvis validate [PACKAGE ...]
 python -m clio_jarvis describe PACKAGE [--set name=value ...]
-python -m clio_jarvis selftest PACKAGE [--set name=value ...] [--work DIR] [--pv-env SCRIPT]
+python -m clio_jarvis selftest PACKAGE [--set name=value ...] [--work DIR]
 ```
 
 - `validate` loads every contract and exits nonzero if any package is refused.
-- `describe` prints the document relay reads before a run: parameter schema,
-  resources, view descriptors and service ports.
-- `selftest` runs the package through jarvis-cd (`jarvis ppl run`) in a
-  private `JARVIS_ROOT`, with the contract's `selftest.params` plus any
-  `--set`. It writes `selftest-report.json` in the work directory and exits 0
+- `describe` prints the document relay reads before a run: install spec,
+  parameter schema, resources, sizing, view descriptors, other outputs and
+  service ports.
+- `selftest` runs the package through jarvis-cd in a private `JARVIS_ROOT`,
+  with the contract's `selftest.params` plus any `--set`: `jarvis ppl install
+  +check` must find the package's software installed, then `jarvis ppl run`
+  runs it. It writes `selftest-report.json` in the work directory and exits 0
   only if every check passes.
 
 The self-test checks:
 
+- The package's Spack spec is installed (`jarvis ppl install +check`); if not,
+  it stops and says to run `jarvis ppl install`.
 - `clio-contract.json` matches the package hash and holds input digests.
 - Applications: progress steps 1 to N in order, with valid growing view
   descriptors; a last `completed` event with `growing: false`; a finalized
-  artifact. With `--pv-env`, pvpython opens the output with the descriptor's
-  reader and checks the step count, arrays, time and a changing field, then
-  saves a screenshot.
+  artifact. With `pvpython` on PATH (`spack load paraview`), pvpython opens
+  the output with the descriptor's reader and checks the step count, arrays,
+  time and a changing field, then saves a screenshot.
 - Services: one `ready` event with a port, and a SIGTERM stop that writes the
   stop record.
 - The package's own `selftest.py`. For pvserver, two pvpython clients in
@@ -115,21 +162,20 @@ Run the unit tests with `pytest`.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 4, 4 | MPI ranks and ranks per node |
+| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; empty `ppn` means the physical cores of the configuring host |
 | `L` | 128 | Grid cells per side |
 | `steps`, `plotgap` | 15000, 150 | Simulation steps, and steps per output step (100 output steps) |
+| `checkpoint_freq` | 0 | Steps between checkpoints in `{run_dir}/ckpt.bp`, the `checkpoint` (restart) output; 0 means none |
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/gs.bp` |
 
 On 4 Ares ranks the defaults write an output step about every 2.7 s, for
-about 4.5 minutes. Needs `adios2_simulations_gray-scott` built with
-`gray_scott/build/clio_vtx_patch.py`, which adds the `vtk.xml` attribute and
-the `time` variable.
+about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe.
 
 ### xcompact3d
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 4, 4 | MPI ranks and ranks per node |
+| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; empty `ppn` means the physical cores of the configuring host |
 | `geometry` | empty | STL file of the body (binary or ASCII, closed, any units). Relative paths are from the directory jarvis runs in; `{pkg_dir}` names the package. Empty means the Taylor-Green case |
 | `inflow` | 1.0 | Inflow speed U along +x |
 | `angle` | 0 | Angle of attack in degrees, nose up (a turn about z) |
@@ -139,6 +185,8 @@ the `time` variable.
 | `upstream`, `downstream`, `lateral` | 3, 10, 3 | Domain margins in body lengths |
 | `n` | 65 | Grid points per side, Taylor-Green case only (33, 65, 129 or 257) |
 | `ilast`, `ioutput`, `dt` | 2400, 20, 0.005 | Iterations, iterations per snapshot, time step |
+| `icheckpoint` | 0 | Iterations between restart files (`checkpoint.bp5`, the `restart` output) and statistics writes; 0 means none |
+| `initstat` | 0 | Iteration from which statistics are averaged into `statistics.bp5` (the `statistics` output); 0 means none |
 | `re` | 1600 | Reynolds number; U L / nu in the body case |
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/data.bp5` |
 
@@ -154,8 +202,10 @@ rules so `dt` can be worked out before the job is approved: CFL = U dt / h at
 most 0.2 (aim for 0.1) and dt nu (2 / h^2 + 1 / dz^2) at most 0.0075, with h =
 1 / `resolution`, nu = U / `re`, and dz = 2h for a periodic span of at least 16
 / `resolution` (finer for a shorter one, since the span gets at least 8 points)
-or h for a free one. It also covers run length, snapshot count and a walltime
-estimate of about nx ny nz `ilast` / (500000 `nprocs`) seconds on Ares. `clio-case.json` records the grid, body placement, solid points and
+or h for a free one. It also covers run length, snapshot count and a walltime estimate of about
+nx ny nz `ilast` / (throughput `nprocs`) seconds, with the site's throughput
+per rank measured from a short run; the contract's `sizing` part gives the
+mesh, pencil-grid and node rules. `clio-case.json` records the grid, body placement, solid points and
 stability numbers, `body.stl` is the body in solver coordinates, and
 `forces.dat` gets time, drag and lift from a control volume round the body. A
 NACA 4412 section at 20 degrees, Re 1000 and resolution 24 (361 x 160 x 8)
@@ -167,26 +217,28 @@ ranks.
 and break into turbulence by about t = 9. On 4 Ares ranks the defaults write a
 snapshot about every 3.2 s, for about 6.4 minutes.
 
-**Build.** `xcompact3d/build/build.sh <prefix>` builds 2DECOMP&FFT 2.0.4 and
-Incompact3d v5.0 with ADIOS2, applies `clio_vtx_patch.py` and
-`clio_geometry_patch.py`, and installs `<prefix>/bin/xcompact3d`
-(`ares/build_x3body.sbatch` runs it on Ares). Without the geometry patch the
-Taylor-Green case still runs.
+**Software.** The `clio.xcompact3d@5.0 +clio` recipe, over
+`clio.decomp2d-fft@2.0.4 io=adios2 +clio` and the site's ADIOS2 when it has
+one. Statistics and restart files are off by default (`icheckpoint` and
+`initstat` 0); when a run writes them they are reported as `statistics` and
+`restart` artifacts beside the `snapshots` view.
 
 ### pvserver
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs` | 1 | pvserver ranks (`mpiexec -launcher fork` when above 1) |
+| `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; empty `ppn` means the physical cores. Above 1 rank they start through the chosen MPI's `mpiexec`, over the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or on that node alone |
 | `port` | 0 | TCP port; 0 picks a free one, reported in the ready event |
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |
-| `persist` | true | Start a new pvserver on the same port when a client disconnects. A ParaView 6 pvserver serves one client session, then exits (`--multi-clients` is deprecated). |
-| `env_script` | empty | Script sourced before `pvserver`, such as Kitware's `pv-env.sh` |
+| `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
 | `hold` | false | Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
 | `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
 | `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. |
 
-`pvserver` binds to 127.0.0.1 only. Reach it over an SSH tunnel. The
+`pvserver` binds to 127.0.0.1 only. Reach it over an SSH tunnel. The software
+is Spack's builtin `paraview@5.13.1 +mpi +adios2 +python ~qt` with OSMesa
+offscreen rendering; 5.13.1 is the version the CLIO ParaView MCP client
+builds, and the one Spack 0.23.1 prefers. The
 supervisor writes `pvserver-ready.json` when the port is listening and
 `pvserver-stop.json` when it stops (`clio.service-stop.v1`, with the reason).
 They go to `state_dir`, `{shared_dir}/pvserver` by default.

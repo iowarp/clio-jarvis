@@ -29,7 +29,7 @@ from jarvis_cd.deployment import (
 )
 from jarvis_cd.shell import Exec, MpiExecInfo
 
-from .spec import RESOLVED_SCHEMA, Contract, load_contract
+from .spec import RESOLVED_SCHEMA, Contract, load_contract, physical_cores
 
 #: Parameters the fill rule set on the last configure, so a re-configure refills them.
 FILLED_KEY = "_clio_filled"
@@ -54,7 +54,7 @@ def mpi_safe_env(env: Mapping[str, Any]) -> dict[str, str]:
 class _ClioPackage:
     """Shared RL40 behaviour. Mixed in ahead of a jarvis-cd base class."""
 
-    #: Program the deployment contract probes when no ``executable`` parameter is set.
+    #: Program the Spack install puts on PATH; the deployment contract probes it.
     clio_program: str = ""
     #: None: check the program is on PATH without running it.
     clio_probe_arguments: tuple[str, ...] | None = ("--version",)
@@ -70,11 +70,36 @@ class _ClioPackage:
             self._clio_contract_cache = load_contract(Path(self.pkg_dir))
         return self._clio_contract_cache
 
-    def _clio_placement(self) -> dict[str, str]:
+    def configure_menu(self) -> list[dict[str, Any]]:
+        """jarvis-cd's menu with the contract's Spack linkage as the install defaults.
+
+        ``jarvis ppl install`` plans the query in the pipeline's Spack
+        environment: it reuses what the site already has and builds the rest
+        from Spack's builtin repository and the repositories named here.
+        """
+        install = self.clio_contract().install()
+        menu = [dict(entry) for entry in super().configure_menu()]  # type: ignore[misc]
+        for entry in menu:
+            if entry.get("name") in ("install_method", "install_query", "install_repos"):
+                entry["default"] = install[entry["name"]]
+        if not any(entry.get("name") == "install_repos" for entry in menu):
+            menu.append(
+                {
+                    "name": "install_repos",
+                    "msg": "Spack repositories with recipes the install_query needs beyond Spack's builtin",
+                    "type": list,
+                    "default": install["install_repos"],
+                    "args": [{"name": "repo", "msg": "Path of a Spack repository", "type": str}],
+                }
+            )
+        return menu
+
+    def _clio_placement(self) -> dict[str, Any]:
         return {
             "shared_dir": str(self.shared_dir),
             "private_dir": str(self.private_dir),
             "pkg_dir": str(self.pkg_dir),
+            "physical_cores": physical_cores(),
         }
 
     def _configure(self, **kwargs: Any) -> None:
@@ -145,7 +170,8 @@ class _ClioPackage:
     # -- launching ------------------------------------------------------------
 
     def clio_executable(self) -> str:
-        return str(self.config.get("executable") or self.clio_program)
+        """The program, found on the PATH that ``spack load`` of the install query gives."""
+        return self.clio_program
 
     def _clio_mpi(self, command: str, cwd: str) -> None:
         """Run ``command`` under MPI with stdout on the progress and artifact providers."""
@@ -169,12 +195,6 @@ class _ClioPackage:
     def _clio_runtime_status(self) -> RuntimeStatus:
         environment = self._deployment_environment()
         program = self.clio_executable()
-        if os.path.isabs(program):
-            # probe_program takes PATH names only; put the configured directory first.
-            directory, program = os.path.split(program)
-            environment["PATH"] = os.pathsep.join(
-                part for part in (directory, environment.get("PATH", "")) if part
-            )
         if shutil.which(program, path=environment.get("PATH")) is None:
             return RuntimeStatus("unavailable", "software_not_found")
         if self.clio_probe_arguments is None:
@@ -193,7 +213,10 @@ class _ClioPackage:
         status = self._clio_runtime_status()
         requirement = RuntimeRequirement(
             requirement_id=contract.package,
-            description=f"{self.clio_executable()} available through PATH",
+            description=(
+                f"{self.clio_executable()} available through PATH from the Spack install "
+                f"{contract.data['install']['query']!r} (jarvis ppl install)"
+            ),
             required_capabilities=self.clio_capabilities,
             available_capabilities=self.clio_capabilities if status.usable else (),
             status=status,

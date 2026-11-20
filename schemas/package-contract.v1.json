@@ -4,7 +4,7 @@
   "title": "clio-jarvis package contract, version 1",
   "description": "The contract.yaml beside each clio-jarvis package's pkg.py (RL40). A package that misses a part does not ship.",
   "type": "object",
-  "required": ["schema", "package", "version", "kind", "summary", "parameters", "resources", "outputs", "progress", "provenance", "selftest"],
+  "required": ["schema", "package", "version", "kind", "summary", "install", "parameters", "resources", "sizing", "outputs", "progress", "provenance", "selftest"],
   "additionalProperties": false,
   "$defs": {
     "param_name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
@@ -33,10 +33,18 @@
     },
     "output": {
       "type": "object",
-      "required": ["name", "path", "path_kind", "format", "reader"],
+      "required": ["name", "path", "path_kind", "format"],
       "additionalProperties": false,
+      "if": { "required": ["role"], "properties": { "role": { "not": { "const": "snapshots" } } } },
+      "else": { "required": ["reader"] },
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$" },
+        "role": {
+          "enum": ["snapshots", "statistics", "restart"],
+          "default": "snapshots",
+          "description": "snapshots: the growing series a viewer follows (needs reader). statistics and restart: files reported as artifacts when the run ends, if the run wrote them."
+        },
+        "description": { "type": "string", "description": "What the output holds and when the run writes it." },
         "path": { "type": "string", "minLength": 1, "description": "Template over the configured parameters and {shared_dir}, for example '{outdir}/gs.bp'." },
         "path_kind": { "enum": ["file", "directory", "glob"] },
         "format": { "type": "string" },
@@ -56,6 +64,46 @@
     "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([.+-][0-9A-Za-z.-]+)?$" },
     "kind": { "enum": ["application", "service"] },
     "summary": { "type": "string", "minLength": 1 },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "query", "repos"],
+      "description": "The package's Spack linkage. It becomes the install_method, install_query and install_repos menu defaults, which jarvis-cd's Spack installer plans: it finds what the site has and builds the rest.",
+      "properties": {
+        "method": { "const": "spack" },
+        "query": {
+          "type": "string", "minLength": 1,
+          "description": "Spack spec of the software. MPI stays the mpi virtual: the spec never names an MPI, so the site's MPI is reused."
+        },
+        "repos": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Spack repositories holding recipes the query needs beyond Spack's builtin, relative to the clio-jarvis repository root."
+        }
+      }
+    },
+    "sizing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mesh", "decomposition", "ranks", "processes_per_node", "nodes"],
+      "description": "How a run is sized: mesh, then MPI ranks, then nodes.",
+      "properties": {
+        "mesh": { "type": "string", "description": "How the mesh (the work in one step) follows from the parameters." },
+        "decomposition": { "enum": ["pencil2d", "block3d", "data-parallel", "none"] },
+        "ranks": { "type": "string", "description": "How to choose the process count from the mesh, and the limits the decomposition puts on it." },
+        "processes_per_node": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["param", "default"],
+          "properties": {
+            "param": { "$ref": "#/$defs/param_name" },
+            "default": { "const": "physical_cores", "description": "An empty parameter takes the physical core count of the host that configures the run." }
+          }
+        },
+        "nodes": { "$ref": "#/$defs/value" },
+        "cost": { "type": "string", "description": "How to estimate walltime. Throughput is calibrated on the site from a short run, not fixed in the contract." }
+      }
+    },
     "parameters": {
       "type": "object",
       "additionalProperties": false,

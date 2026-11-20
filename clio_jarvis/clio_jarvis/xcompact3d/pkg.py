@@ -4,11 +4,13 @@ With ``geometry`` set to an STL file, the case is flow along +x past that body,
 immersed through the immersed boundary method (see ``body.py``). With
 ``geometry`` empty, it is the Taylor-Green vortex at Re 1600 from the
 Incompact3d examples. The run directory gets ``input.i3d``,
-``adios2_config.xml`` (BP5), ``clio-vtk.xml`` and ``clio-case.json``. The clio
-VTX patch in ``build/clio_vtx_patch.py`` makes the solver define ``vtk.xml``
-from that file and put the simulation time in every snapshot, so ParaView's
-ADIOS2VTXReader follows ``data.bp5`` while it grows. The clio geometry patch in
-``build/clio_geometry_patch.py`` reads the body mask and writes it as ``ep``.
+``adios2_config.xml`` (BP5), ``clio-vtk.xml`` and ``clio-case.json``. The
+software comes from the ``clio.xcompact3d`` Spack recipe in the repository's
+``spack/`` directory, which ``jarvis ppl install`` plans from the contract's
+install query. Its ``+clio`` variant makes the solver define ``vtk.xml`` from
+``clio-vtk.xml`` and put the simulation time in every snapshot, so ParaView's
+ADIOS2VTXReader follows ``data.bp5`` while it grows, and reads the body mask
+and writes it as ``ep``.
 """
 
 from __future__ import annotations
@@ -32,6 +34,13 @@ BODY_STL = "body-input.stl"
 
 #: Point fields the TGV case writes in each snapshot.
 TGV_ARRAYS = ("ux", "uy", "uz", "pp", "vort", "critq")
+#: A step interval Incompact3d never reaches: what "none" means for icheckpoint and initstat.
+NEVER = 100000000
+
+
+def _every(value: Any) -> int:
+    """A positive step count as given; 0 or empty as :data:`NEVER`."""
+    return int(value) if value not in (None, "") and int(value) > 0 else NEVER
 
 
 def set_i3d(text: str, name: str, value: Any) -> str:
@@ -83,8 +92,14 @@ class Xcompact3d(ClioApplication):
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
-            {"name": "nprocs", "msg": "MPI processes", "type": int, "default": 4},
-            {"name": "ppn", "msg": "MPI processes per node", "type": int, "default": 4},
+            {"name": "nprocs", "msg": "MPI processes; they split the grid into a 2D pencil grid p_row x p_col (see the contract's sizing)", "type": int, "default": 4},
+            {
+                "name": "ppn",
+                "msg": "MPI processes per node; empty means the physical core count of the configuring host",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
             {
                 "name": "geometry",
                 "msg": (
@@ -176,12 +191,24 @@ class Xcompact3d(ClioApplication):
                 "default": "",
             },
             {
-                "name": "executable",
-                "msg": "Xcompact3d program, by name on PATH or by absolute path",
-                "type": str,
-                "default": "xcompact3d",
+                "name": "icheckpoint",
+                "msg": (
+                    "Time steps between restart files (checkpoint.bp5) and statistics writes (statistics.bp5); "
+                    "0 means none. Restart files hold the whole flow state, so keep this well above ioutput"
+                ),
+                "type": int,
+                "default": 0,
             },
-            {"name": "walltime", "msg": "Wall-time limit in seconds, about nx x ny x nz x ilast / (500000 x nprocs) on Ares plus a margin; absent means no limit", "type": int, "default": None, "required": False},
+            {
+                "name": "initstat",
+                "msg": (
+                    "Time step from which the run averages statistics, written to statistics.bp5 every "
+                    "icheckpoint steps; 0 means no statistics"
+                ),
+                "type": int,
+                "default": 0,
+            },
+            {"name": "walltime", "msg": "Wall-time limit in seconds, about nx x ny x nz x ilast / (site throughput x nprocs) plus a margin (see the contract's sizing); absent means no limit", "type": int, "default": None, "required": False},
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 
@@ -224,7 +251,17 @@ class Xcompact3d(ClioApplication):
             dt=dt,
         )
         (run_dir / "input.i3d").write_text(
-            body.input_i3d(case, inflow=inflow, re=re_, dt=dt, ilast=ilast, ioutput=ioutput), encoding="utf-8"
+            body.input_i3d(
+                case,
+                inflow=inflow,
+                re=re_,
+                dt=dt,
+                ilast=ilast,
+                ioutput=ioutput,
+                icheckpoint=_every(config.get("icheckpoint")),
+                initstat=_every(config.get("initstat")),
+            ),
+            encoding="utf-8",
         )
         case.mask.write(run_dir)
         body.write_stl(case.body, run_dir / "body.stl")
@@ -259,12 +296,19 @@ class Xcompact3d(ClioApplication):
             ("nz", n),
             ("ilast", int(config["ilast"])),
             ("ioutput", int(config["ioutput"])),
-            # No restart files: a snapshot series is the only output.
-            ("icheckpoint", 1000000),
+            ("icheckpoint", _every(config.get("icheckpoint"))),
             ("dt", repr(float(config["dt"]))),
             ("re", repr(float(config["re"]))),
         ):
             text = set_i3d(text, name, value)
+        # The example has no initstat line; Incompact3d's default would average from step 1.
+        text = re.sub(
+            r"^(\s*nstat\s*=.*)$",
+            lambda m: f"{m.group(1)}\ninitstat = {_every(config.get('initstat'))}",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
         (run_dir / "input.i3d").write_text(text, encoding="utf-8")
 
         spacing = []
@@ -284,11 +328,20 @@ class Xcompact3d(ClioApplication):
     def _output(self) -> Path:
         return Path(self.config["run_dir"]) / "data.bp5"
 
+    def _run_outputs(self) -> list[Path]:
+        """What a run writes into run_dir: the snapshots, statistics and restart files."""
+        run_dir = Path(self.config["run_dir"])
+        return [self._output()] + [run_dir / name for name in ("statistics.bp5", "checkpoint.bp5", "checkpoint.old", "restart.info")]
+
     def start(self) -> None:
         self._clio_ensure_configured(prepare=True)
         run_dir = Path(self.config["run_dir"])
-        # A rerun starts a fresh series; a viewer must not see the last run's steps.
-        shutil.rmtree(self._output(), ignore_errors=True)
+        # A rerun starts afresh (irestart = 0); a viewer must not see the last run's steps.
+        for path in self._run_outputs():
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
         command = f"{shlex.quote(self.clio_executable())} input.i3d"
         done = threading.Event()
         flusher = threading.Thread(target=_flush_output, args=(self._output(), done), daemon=True)

@@ -5,6 +5,10 @@ It returns once the port is listening, and the progress provider reports the
 ready port. ``stop`` sends SIGTERM; the supervisor stops pvserver and writes
 ``pvserver-stop.json`` in the state directory. A client reaches the server
 through an SSH tunnel to that port.
+
+pvserver comes from Spack's builtin ``paraview`` recipe through the contract's
+install query; ``jarvis ppl install`` reuses the site's MPI and Mesa and builds
+the rest, and its ``spack load`` environment puts pvserver on PATH.
 """
 
 from __future__ import annotations
@@ -43,7 +47,13 @@ class Pvserver(ClioService):
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
             {"name": "nprocs", "msg": "pvserver processes", "type": int, "default": 1},
-            {"name": "ppn", "msg": "pvserver processes per node", "type": int, "default": 1},
+            {
+                "name": "ppn",
+                "msg": "pvserver processes per node; empty means the node's physical cores",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
             {"name": "port", "msg": "TCP port on 127.0.0.1; 0 picks a free port", "type": int, "default": 0},
             {
                 "name": "connect_id",
@@ -62,18 +72,6 @@ class Pvserver(ClioService):
                 "msg": "Keep start running until the server stops, so a hand-run 'jarvis ppl run' serves until it is signalled",
                 "type": bool,
                 "default": False,
-            },
-            {
-                "name": "env_script",
-                "msg": "Shell script sourced before pvserver starts, such as ParaView's environment; empty means none",
-                "type": str,
-                "default": "",
-            },
-            {
-                "name": "executable",
-                "msg": "pvserver program, by name on PATH or by absolute path",
-                "type": str,
-                "default": "pvserver",
             },
             {
                 "name": "max_lifetime",
@@ -102,17 +100,14 @@ class Pvserver(ClioService):
     def _clio_prepare(self, config: dict[str, Any]) -> None:
         Path(config["state_dir"]).mkdir(parents=True, exist_ok=True)
 
-    def _clio_runtime_status(self):
-        if self.config.get("env_script"):
-            # pvserver needs its environment script to start; finding the script is the check.
-            from jarvis_cd.deployment import RuntimeStatus
-
-            if not os.path.isfile(self.config["env_script"]):
-                return RuntimeStatus("unavailable", "software_not_found")
-            return RuntimeStatus("ready", "software_found")
-        return super()._clio_runtime_status()
-
     # -- files ---------------------------------------------------------------
+
+    def _clio_hosts(self) -> list[str]:
+        """Hosts for the pvserver ranks: the package's hostfile (after host_slice), or none for this node."""
+        hostfile = self.hostfile
+        if hostfile is None or not len(hostfile) or hostfile.is_local():
+            return []
+        return list(hostfile.hosts)
 
     def _state(self, name: str) -> Path:
         self._clio_ensure_configured(prepare=False)
@@ -150,9 +145,10 @@ class Pvserver(ClioService):
             str(SUPERVISOR),
             "--state-dir", str(state_dir),
             "--executable", self.clio_executable(),
-            "--env-script", str(config.get("env_script") or ""),
             "--port", str(int(config["port"])),
             "--nprocs", str(int(config["nprocs"])),
+            "--ppn", str(int(config.get("ppn") or 0)),
+            "--hosts", ",".join(self._clio_hosts()),
             "--connect-id", str(int(config["connect_id"])),
             "--start-timeout", str(int(config["start_timeout"])),
             "--grace", str(self._grace()),

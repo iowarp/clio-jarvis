@@ -9,6 +9,7 @@ progress records, each carrying the output's view descriptor (RL43).
 
 from __future__ import annotations
 
+import glob
 import math
 import os
 import re
@@ -27,7 +28,7 @@ from jarvis_cd.artifacts.schema import (
 )
 from jarvis_cd.progress import LineBuffer, ProgressObservation, ProgressState
 
-from .spec import Contract, evaluate, load_contract
+from .spec import VIEW_ROLE, Contract, evaluate, is_view, load_contract
 
 STEP_SCHEMA = "clio.step.v1"
 SERVICE_READY_SCHEMA = "clio.service-ready.v1"
@@ -37,6 +38,13 @@ _STRUCTURES = {
     "directory": ArtifactStructure.DIRECTORY,
     "glob": ArtifactStructure.COLLECTION,
 }
+_ROLES = {"restart": ArtifactRole.CHECKPOINT}
+
+
+def _exists(path: str, kind: str) -> bool:
+    if kind == "glob":
+        return bool(glob.glob(path))
+    return Path(path).exists()
 
 
 def _positive_int(value: Any) -> int | None:
@@ -301,12 +309,19 @@ def _tree_size(path: Path) -> int:
 
 
 class ContractArtifactAdapter:
-    """RL40 outputs as jarvis-cd artifacts, each carrying its view descriptor."""
+    """RL40 outputs as jarvis-cd artifacts.
+
+    Snapshots outputs carry their view descriptor and grow with each step.
+    Statistics and restart outputs are reported once, when the run ends, if
+    the run wrote them.
+    """
 
     def __init__(self, contract: Contract, config: Mapping[str, Any]) -> None:
         self.shared = _Shared(contract, config)
         self.reader = _LineReader(contract, config)
         self.outputs = list(contract.data["outputs"])
+        self.views = [output for output in self.outputs if is_view(output)]
+        self.others = [output for output in self.outputs if not is_view(output)]
         self.ids = {output["name"]: new_artifact_id() for output in self.outputs}
         self.state: dict[str, ArtifactState] = {}
         self.terminal = False
@@ -319,11 +334,14 @@ class ContractArtifactAdapter:
 
     def finalize_artifacts_for_exit(self, return_code: int) -> list[ArtifactObservation]:
         observations = self._observe("", finalize=True)
-        if self.terminal or not self.state:
+        if self.terminal:
+            return observations
+        final = ArtifactState.FINALIZED if return_code == 0 else ArtifactState.INCOMPLETE
+        written = [output for output in self.others if _exists(self._path(output), output["path_kind"])]
+        if not self.state and not written:
             return observations
         self.terminal = True
-        final = ArtifactState.FINALIZED if return_code == 0 else ArtifactState.INCOMPLETE
-        for output in self.outputs:
+        for output in self.views:
             if output["name"] not in self.state:
                 continue
             path = Path(self._path(output))
@@ -334,6 +352,12 @@ class ContractArtifactAdapter:
             size = _tree_size(path) if path.exists() else None
             observations.append(
                 self._observation(output, state, growing=False, size=size, return_code=return_code)
+            )
+        for output in written:
+            path = Path(self._path(output))
+            size = _tree_size(path) if path.exists() else None
+            observations.append(
+                self._observation(output, final, growing=False, size=size, return_code=return_code)
             )
         return observations
 
@@ -350,7 +374,7 @@ class ContractArtifactAdapter:
             if event.kind != "step":
                 continue
             visible = self.shared.visible(event.step)
-            for output in self.outputs:
+            for output in self.views:
                 state = ArtifactState.AVAILABLE if visible >= 1 else ArtifactState.PRODUCING
                 if self.state.get(output["name"]) is ArtifactState.AVAILABLE:
                     state = ArtifactState.AVAILABLE
@@ -361,6 +385,8 @@ class ContractArtifactAdapter:
         return observations
 
     def _path(self, output: Mapping[str, Any]) -> str:
+        if not is_view(output):
+            return self.shared.contract.output_record(output, self.shared.config)["path"]
         return self.shared.view(growing=True, output=output)["path"]
 
     def _observation(
@@ -374,20 +400,25 @@ class ContractArtifactAdapter:
         size: int | None = None,
         return_code: int | None = None,
     ) -> ArtifactObservation:
-        view = self.shared.view(growing=growing, output=output)
-        record: dict[str, Any] = {"view": view}
+        if is_view(output):
+            view = self.shared.view(growing=growing, output=output)
+            record: dict[str, Any] = {"view": view}
+            location = view["path"]
+        else:
+            record = self.shared.contract.output_record(output, self.shared.config)
+            location = record["path"]
         if step is not None:
             record["step"] = step
             record["visible_steps"] = visible
         if return_code is not None:
             record["return_code"] = return_code
-        path = PurePosixPath(view["path"])
+        path = PurePosixPath(location)
         fmt = output["format"]
         return ArtifactObservation(
             artifact_id=self.ids[output["name"]],
             logical_name=output["name"],
             kind="scientific_dataset",
-            role=ArtifactRole.OUTPUT,
+            role=_ROLES.get(output.get("role", VIEW_ROLE), ArtifactRole.OUTPUT),
             structure=_STRUCTURES[output["path_kind"]],
             ownership=ArtifactOwnership.SHARED,
             state=state,

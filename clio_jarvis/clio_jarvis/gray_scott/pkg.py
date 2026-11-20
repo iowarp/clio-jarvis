@@ -2,7 +2,11 @@
 
 The run directory gets ``settings.json`` and ``adios2.xml``. The solver runs
 under MPI there and writes ``gs.bp`` with a ``vtk.xml`` attribute, so ParaView's
-ADIOS2VTXReader opens it as image data and sees each new step as it lands.
+ADIOS2VTXReader opens it as image data and sees each new step as it lands. The
+software comes from the ``clio.gray-scott`` Spack recipe in the repository's
+``spack/`` directory, whose ``+clio`` variant adds that attribute and the
+simulation time; ``jarvis ppl install`` plans it from the contract's install
+query.
 """
 
 from __future__ import annotations
@@ -27,8 +31,14 @@ class GrayScott(ClioApplication):
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
-            {"name": "nprocs", "msg": "MPI processes", "type": int, "default": 4},
-            {"name": "ppn", "msg": "MPI processes per node", "type": int, "default": 4},
+            {"name": "nprocs", "msg": "MPI processes; they split the grid into a 3D block grid (see the contract's sizing)", "type": int, "default": 4},
+            {
+                "name": "ppn",
+                "msg": "MPI processes per node; empty means the physical core count of the configuring host",
+                "type": int,
+                "default": None,
+                "required": False,
+            },
             {"name": "L", "msg": "Grid cells per side (the grid is L x L x L)", "type": int, "default": 128},
             {"name": "steps", "msg": "Simulation steps", "type": int, "default": 15000},
             {"name": "plotgap", "msg": "Simulation steps between two output steps", "type": int, "default": 150},
@@ -45,10 +55,10 @@ class GrayScott(ClioApplication):
                 "default": "",
             },
             {
-                "name": "executable",
-                "msg": "Gray-Scott program, by name on PATH or by absolute path",
-                "type": str,
-                "default": "adios2_simulations_gray-scott",
+                "name": "checkpoint_freq",
+                "msg": "Simulation steps between checkpoints written to ckpt.bp; 0 means none",
+                "type": int,
+                "default": 0,
             },
             {"name": "walltime", "msg": "Wall-time limit in seconds; absent means no limit", "type": int, "default": None, "required": False},
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
@@ -69,8 +79,8 @@ class GrayScott(ClioApplication):
             "steps": config["steps"],
             "noise": config["noise"],
             "output": str(run_dir / "gs.bp"),
-            "checkpoint": False,
-            "checkpoint_freq": 100000000,
+            "checkpoint": bool(config.get("checkpoint_freq")),
+            "checkpoint_freq": int(config.get("checkpoint_freq") or 0) or 100000000,
             "checkpoint_output": str(run_dir / "ckpt.bp"),
             "restart": False,
             "restart_input": str(run_dir / "ckpt.bp"),
@@ -89,6 +99,7 @@ class GrayScott(ClioApplication):
         run_dir = Path(self.config["run_dir"])
         # A rerun starts a fresh series; a viewer must not see the last run's steps.
         shutil.rmtree(self._output(), ignore_errors=True)
+        shutil.rmtree(run_dir / "ckpt.bp", ignore_errors=True)
         command = f"{shlex.quote(self.clio_executable())} settings.json"
         self._clio_mpi(command, cwd=str(run_dir))
 

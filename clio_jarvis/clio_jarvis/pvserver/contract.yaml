@@ -1,11 +1,19 @@
 schema: clio.package-contract.v1
 package: pvserver
-version: 0.1.2
+version: 0.2.0
 kind: service
 summary: >-
-  ParaView pvserver bound to 127.0.0.1 with offscreen rendering. A ParaView
-  client reaches it through an SSH tunnel to the reported port and opens clio
-  outputs with the reader their view descriptor names.
+  ParaView 5.13.1 pvserver bound to 127.0.0.1 with offscreen OSMesa rendering,
+  built by Spack with MPI and ADIOS2. A ParaView client reaches it through an
+  SSH tunnel to the reported port and opens clio outputs with the reader their
+  view descriptor names.
+
+install:
+  method: spack
+  # Spack's builtin paraview recipe; MPI stays the mpi virtual, so the site's
+  # MPI and Mesa are reused. 5.13.1 matches the CLIO ParaView MCP client.
+  query: paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa
+  repos: []
 
 parameters:
   required: [nprocs, port]
@@ -27,6 +35,18 @@ resources:
   processes_per_node: {param: ppn}
   duration: {param: walltime}
   queue_name: {param: queue}
+
+sizing:
+  mesh: The datasets clients open; pvserver holds no mesh of its own.
+  decomposition: data-parallel
+  ranks: >-
+    nprocs pvserver ranks; readers split a dataset across them. One rank renders
+    a small case; add ranks when a dataset no longer fits one node's memory or
+    renders too slowly. The ranks run on the package's hosts (its hostfile,
+    narrowed by host_slice) with rank 0, the one clients reach, on the node
+    that runs JARVIS; without a hostfile they share that node.
+  processes_per_node: {param: ppn, default: physical_cores}
+  nodes: {ceil_div: [nprocs, ppn]}
 
 outputs: []
 
@@ -60,8 +80,8 @@ service:
 provenance:
   inputs: []
   upstream:
-    - name: ParaView pvserver (Kitware binary release, offscreen EGL)
-      version: "6.2.1"
+    - name: ParaView pvserver (Spack builtin paraview, offscreen OSMesa)
+      version: "5.13.1"
       url: https://www.paraview.org/download/
 
 selftest:

@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: xcompact3d
-version: 0.2.3
+version: 0.3.0
 kind: application
 summary: >-
   Xcompact3d (Incompact3d v5.0) incompressible flow simulation. Give it an STL
@@ -48,27 +48,37 @@ summary: >-
   number near 0.2), so a few shedding cycles take 30 to 50 time units. There
   are ilast / ioutput snapshots; 50 to 200 make a smooth live view, and each
   holds 7 fields of nx x ny x nz doubles.
-  Cost: a run is about nx x ny x nz x ilast point-steps, and Ares runs about
-  500000 point-steps per second per MPI rank (361 x 160 x 8 points for 7500
-  steps took 6 minutes on 20 ranks), so walltime in seconds is about nx x ny x
-  nz x ilast / (500000 x nprocs); set walltime with a margin. nprocs must split
-  the grid into a 2D pencil grid; configure refuses one that cannot.
+  Cost: a run is about nx x ny x nz x ilast point-steps, so walltime in seconds
+  is about nx x ny x nz x ilast / (throughput x nprocs), with the site's
+  point-steps per second per MPI rank measured from a short run of the same
+  build (see sizing); set walltime with a margin. nprocs must split the grid
+  into a 2D pencil grid; configure refuses one that cannot.
   Outputs: snapshots of ux, uy, uz, pp, vort, critq and (body case) ep, the
   body indicator, go to a growing BP5 output that ParaView's ADIOS2VTXReader
   follows while the run goes; a slice at mid-span coloured by vort shows the
   wake, and a contour of ep at 0.5 shows the body. clio-case.json in the run
   directory gives the grid, the body placement and the stability numbers,
   body.stl is the body in solver coordinates, and forces.dat holds drag and
-  lift by time. All of these go to run_dir; set run_dir to a folder you can
+  lift by time. With icheckpoint set, the run also writes restart files
+  (checkpoint.bp5 and restart.info) and, with initstat set too, averaged
+  statistics (statistics.bp5) every icheckpoint steps; both are off by
+  default. All of these go to run_dir; set run_dir to a folder you can
   read (beside the geometry, say) and open <run_dir>/data.bp5 in ParaView as
   soon as the job runs to watch it grow. While the run goes, the package syncs
   data.bp5 to the file server every second, so a viewer on another machine
   sees each snapshot as it lands rather than in 30 s bursts.
+install:
+  method: spack
+  # MPI stays the mpi virtual, so the site's MPI (Ares: its openmpi) is reused.
+  query: xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran
+  repos: [spack]
 parameters:
   required: [nprocs, n, ilast, ioutput, dt]
   properties:
-    nprocs: {minimum: 1, maximum: 4096}
+    nprocs: {minimum: 1, maximum: 65536}
     ppn: {minimum: 1, maximum: 256}
+    icheckpoint: {minimum: 0}
+    initstat: {minimum: 0}
     inflow: {exclusiveMinimum: 0}
     angle: {minimum: -90, maximum: 90}
     resolution: {minimum: 4, maximum: 512}
@@ -81,7 +91,7 @@ parameters:
     dt: {exclusiveMinimum: 0}
     re: {exclusiveMinimum: 0}
     walltime: {minimum: 1}
-  review: [geometry, run_dir, nprocs, resolution, span, angle, inflow, re, ilast, ioutput, dt, n, walltime, queue]
+  review: [geometry, run_dir, nprocs, ppn, resolution, span, angle, inflow, re, ilast, ioutput, dt, n, icheckpoint, initstat, walltime, queue]
   fill:
     input_template: "{pkg_dir}/config/input_DNS_Re1600.i3d"
     run_dir: "{shared_dir}/run"
@@ -91,6 +101,32 @@ resources:
   processes_per_node: {param: ppn}
   duration: {param: walltime}
   queue_name: {param: queue}
+
+sizing:
+  mesh: >-
+    nx x ny x nz grid points. Body case: about (upstream + body length +
+    downstream) x resolution by (body height + 2 x lateral) x resolution, by
+    max(8, span x resolution / 2) for a periodic span or (body depth + 2 x
+    lateral) x resolution for span free, each rounded up to an FFT-friendly
+    count; clio-case.json records the grid chosen. Taylor-Green case: n x n x n.
+  decomposition: pencil2d
+  ranks: >-
+    nprocs = p_row x p_col, a 2D pencil grid that 2DECOMP&FFT needs with p_row
+    at most min(nx, ny) and p_col at most min(ny, nz); configure picks the
+    split closest to square and refuses an nprocs that has none. A periodic
+    span has nz = 8 or a little more, so it allows at most min(nx, ny) x nz
+    ranks. Choose nprocs from the mesh: more ranks shorten the run until each
+    pencil is so small that the transposes dominate, so keep each rank's
+    share, nx x ny x nz / nprocs, in the tens of thousands of points or more,
+    and prefer an nprocs with a near-square split (a power of two, or a
+    multiple of ppn).
+  processes_per_node: {param: ppn, default: physical_cores}
+  nodes: {ceil_div: [nprocs, ppn]}
+  cost: >-
+    walltime seconds = nx x ny x nz x ilast / (throughput x nprocs), with the
+    throughput in point-steps per second per rank measured on the site with a
+    short run of the same build and rank count range; add a margin for
+    snapshot writes, which grow with nx x ny x nz x 7 doubles per snapshot.
 
 outputs:
   - name: snapshots
@@ -109,6 +145,24 @@ outputs:
       color_map: Viridis (matplotlib)
     # Both cases; the body case adds ep.
     arrays: [ux, uy, uz, pp, vort, critq]
+  - name: statistics
+    role: statistics
+    description: >-
+      Time-averaged statistics (means and second moments of the velocity and
+      pressure) from step initstat, written every icheckpoint steps; only when
+      both icheckpoint and initstat are set.
+    path: "{run_dir}/statistics.bp5"
+    path_kind: directory
+    format: adios2-bp5
+  - name: restart
+    role: restart
+    description: >-
+      Restart file with the whole flow state, written every icheckpoint steps
+      with restart.info beside it (the step and time it holds); only when
+      icheckpoint is set.
+    path: "{run_dir}/checkpoint.bp5"
+    path_kind: directory
+    format: adios2-bp5
 
 progress:
   unit: step
@@ -126,8 +180,9 @@ provenance:
     - "{run_dir}/clio-case.json"
   upstream:
     - name: >-
-        Incompact3d v5.0 with 2DECOMP&FFT 2.0.4, with the clio VTX patch in
-        build/clio_vtx_patch.py and the clio geometry patch in build/clio_geometry_patch.py
+        Incompact3d v5.0 with 2DECOMP&FFT 2.0.4, built by the Spack recipes
+        clio.xcompact3d +clio and clio.decomp2d-fft io=adios2 in spack/, whose
+        patch() methods add the clio VTX output, the body mask and BP5 naming
       version: "5.0"
       url: https://github.com/xcompact3d/Incompact3d/tree/v5.0
     - name: Incompact3d examples/TGV-Taylor-Green-vortex/input_DNS_Re1600.i3d (BSD-3-Clause, see NOTICE)

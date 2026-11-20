@@ -12,6 +12,7 @@ import ast
 import hashlib
 import json
 import math
+import os
 import re
 import string
 from dataclasses import dataclass, field
@@ -28,8 +29,10 @@ STOP_RECORD_SCHEMA = "clio.service-stop.v1"
 
 #: Every part RL40 requires, in the order the validator reports them.
 PARTS: tuple[str, ...] = (
+    "install",
     "parameters",
     "resources",
+    "sizing",
     "outputs",
     "progress",
     "service",
@@ -39,7 +42,43 @@ PARTS: tuple[str, ...] = (
 
 CONTRACT_DIR = Path(__file__).resolve().parent
 REPO_PACKAGES_DIR = CONTRACT_DIR.parent
-SCHEMAS_DIR = REPO_PACKAGES_DIR.parent.parent / "schemas"
+REPO_ROOT = REPO_PACKAGES_DIR.parent.parent
+SCHEMAS_DIR = REPO_ROOT / "schemas"
+
+#: Outputs a viewer follows; every other role is reported once, when the run ends.
+VIEW_ROLE = "snapshots"
+#: Spack MPI providers. A query names the mpi virtual only, so the site's MPI is reused.
+_MPI_PROVIDERS = re.compile(
+    r"\^\s*(?:\[[^\]]*\]\s*)?"
+    r"(openmpi|mpich|mvapich2?|mvapich-plus|intel-mpi|intel-oneapi-mpi|cray-mpich|"
+    r"spectrum-mpi|hpcx-mpi|msmpi|mpt|fujitsu-mpi|nvhpc|mpitrampoline|mpiwrapper)\b"
+)
+
+
+def physical_cores() -> int:
+    """Physical cores of this host: distinct (package, core) pairs on Linux, else the CPU count."""
+    pairs: set[tuple[str, str]] = set()
+    try:
+        package = core = ""
+        for line in Path("/proc/cpuinfo").read_text(encoding="ascii", errors="replace").splitlines():
+            key, _, value = line.partition(":")
+            key = key.strip()
+            if key == "physical id":
+                package = value.strip()
+            elif key == "core id":
+                core = value.strip()
+            elif not key and core:
+                pairs.add((package, core))
+                package = core = ""
+        if core:
+            pairs.add((package, core))
+    except OSError:
+        pass
+    return len(pairs) or os.cpu_count() or 1
+
+
+def is_view(output: Mapping[str, Any]) -> bool:
+    return output.get("role", VIEW_ROLE) == VIEW_ROLE
 
 _MENU_TYPES = {
     "int": "integer",
@@ -159,9 +198,10 @@ def fill(contract_fill: Mapping[str, str], config: Mapping[str, Any]) -> dict[st
 # ---------------------------------------------------------------------------
 
 
-def package_files(pkg_dir: Path) -> list[Path]:
-    """Files that define a package's behaviour: its directory and the shared contract code."""
-    roots = [pkg_dir, CONTRACT_DIR]
+def package_files(pkg_dir: Path, repos: Iterable[str] = ()) -> list[Path]:
+    """Files that define a package's behaviour: its directory, the shared contract code
+    and the Spack repositories its install part names."""
+    roots = [pkg_dir, CONTRACT_DIR, *(REPO_ROOT / repo for repo in repos)]
     files: list[Path] = []
     for root in roots:
         for path in sorted(root.rglob("*")):
@@ -175,14 +215,20 @@ def package_files(pkg_dir: Path) -> list[Path]:
     return files
 
 
-def package_sha256(pkg_dir: Path) -> str:
-    """SHA-256 over the package's files and the shared contract code, by relative name.
+def package_sha256(pkg_dir: Path, repos: Iterable[str] = ()) -> str:
+    """SHA-256 over the package's files, the shared contract code and its Spack recipes,
+    by relative name.
 
     Relay pins a reviewed package by this value (RL24, RL42).
     """
     digest = hashlib.sha256()
-    for path in package_files(pkg_dir):
-        root = pkg_dir if path.is_relative_to(pkg_dir) else REPO_PACKAGES_DIR
+    for path in package_files(pkg_dir, repos):
+        if path.is_relative_to(pkg_dir):
+            root = pkg_dir
+        elif path.is_relative_to(REPO_PACKAGES_DIR):
+            root = REPO_PACKAGES_DIR
+        else:
+            root = REPO_ROOT
         name = path.relative_to(root).as_posix()
         content = path.read_bytes()
         digest.update(name.encode("utf-8") + b"\0")
@@ -313,17 +359,31 @@ class Contract:
     def defaults(self) -> dict[str, Any]:
         return {entry["name"]: entry.get("default") for entry in self.menu}
 
+    def install(self) -> dict[str, Any]:
+        """The Spack linkage as jarvis-cd menu values, with repositories as absolute paths."""
+        spec = self.data["install"]
+        return {
+            "install_method": spec["method"],
+            "install_query": spec["query"],
+            "install_repos": [str(REPO_ROOT / repo) for repo in spec["repos"]],
+        }
+
     def resolve_config(
         self, config: Mapping[str, Any], placement: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
         """Defaults, then the given values, then the ``fill`` rule for empty ones.
 
         ``placement`` carries ``shared_dir`` and friends; only fill templates
-        may use it, and it is not part of the result.
+        may use it, and it is not part of the result. Its ``physical_cores``
+        fills an empty processes-per-node parameter (the sizing part).
         """
         merged = {**self.defaults(), **dict(config)}
         rules = self.data["parameters"].get("fill") or {}
         merged.update(fill(rules, {**dict(placement or {}), **merged}))
+        ppn = self.data["sizing"]["processes_per_node"]
+        cores = (placement or {}).get("physical_cores")
+        if merged.get(ppn["param"]) in (None, "") and cores:
+            merged[ppn["param"]] = int(cores)
         return merged
 
     def parameters_schema(self) -> dict[str, Any]:
@@ -361,7 +421,9 @@ class Contract:
     def view_descriptor(
         self, output: Mapping[str, Any], config: Mapping[str, Any], *, growing: bool
     ) -> dict[str, Any]:
-        """The view descriptor of one output for this configuration."""
+        """The view descriptor of one snapshots output for this configuration."""
+        if not is_view(output):
+            raise ValueError(f"output {output['name']!r} is {output['role']}, not a view")
         descriptor: dict[str, Any] = {
             "schema": VIEW_SCHEMA,
             "name": output["name"],
@@ -390,6 +452,19 @@ class Contract:
             descriptor["producer"]["sha256"] = self.sha256
         validate_view_descriptor(descriptor)
         return descriptor
+
+    def output_record(self, output: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+        """A statistics or restart output: its role, rendered path and format."""
+        record = {
+            "name": output["name"],
+            "role": output.get("role", VIEW_ROLE),
+            "path": render(output["path"], config),
+            "path_kind": output["path_kind"],
+            "format": output["format"],
+        }
+        if output.get("description"):
+            record["description"] = output["description"]
+        return record
 
     def output(self, name: str) -> dict[str, Any]:
         for output in self.data["outputs"]:
@@ -425,8 +500,14 @@ class Contract:
             "sha256": self.sha256,
             "kind": self.kind,
             "summary": self.data["summary"],
+            "install": {
+                "method": self.data["install"]["method"],
+                "query": self.data["install"]["query"],
+                "repos": list(self.data["install"]["repos"]),
+            },
             "parameters": self.parameters_schema(),
             "review": list(self.data["parameters"].get("review") or []),
+            "sizing": dict(self.data["sizing"]),
             "progress": {
                 key: value
                 for key, value in self.data["progress"].items()
@@ -444,7 +525,10 @@ class Contract:
         outputs = []
         for output in self.data["outputs"]:
             try:
-                outputs.append(self.view_descriptor(output, merged, growing=True))
+                if is_view(output):
+                    outputs.append(self.view_descriptor(output, merged, growing=True))
+                else:
+                    outputs.append(self.output_record(output, merged))
             except (KeyError, ValueError):
                 outputs.append({"name": output["name"], "path": output["path"], "unresolved": True})
         document["outputs"] = outputs
@@ -515,8 +599,31 @@ def load_contract(pkg_dir: str | Path) -> Contract:
     class_name, menu = read_menu(pkg_dir)
     contract = Contract(pkg_dir=pkg_dir, data=data, class_name=class_name, menu=menu)
     _check_semantics(contract)
-    contract.sha256 = package_sha256(pkg_dir)
+    contract.sha256 = package_sha256(pkg_dir, data["install"]["repos"])
     return contract
+
+
+def _check_install(contract: Contract) -> None:
+    package = contract.package
+    spec = contract.data["install"]
+    match = _MPI_PROVIDERS.search(spec["query"])
+    if match:
+        raise ContractError(
+            package, "install", f"query pins the MPI {match.group(1)!r}; depend on the mpi virtual only"
+        )
+    for repo in spec["repos"]:
+        path = REPO_ROOT / repo
+        if not (path / "repo.yaml").is_file() or not (path / "packages").is_dir():
+            raise ContractError(package, "install", f"repo {repo!r} is not a Spack repository")
+    root = re.match(r"\s*([A-Za-z0-9_.-]+)", spec["query"])
+    name = root.group(1).split(".")[-1] if root else ""
+    in_repos = any((REPO_ROOT / repo / "packages" / name / "package.py").is_file() for repo in spec["repos"])
+    if spec["repos"] and not in_repos and name not in _BUILTIN_ROOTS:
+        raise ContractError(package, "install", f"no recipe for {name!r} in {spec['repos']}")
+
+
+#: Root specs Spack's builtin repository provides, so they need no clio recipe.
+_BUILTIN_ROOTS = {"paraview"}
 
 
 def _check_semantics(contract: Contract) -> None:
@@ -546,9 +653,15 @@ def _check_semantics(contract: Contract) -> None:
     for name, value in data["resources"].items():
         need("resources", value_params(value), name)
 
-    output_names = set()
+    _check_install(contract)
+    sizing = data["sizing"]
+    need("sizing", {sizing["processes_per_node"]["param"]}, "processes_per_node")
+    need("sizing", value_params(sizing["nodes"]), "nodes")
+
+    view_names = set()
     for output in data["outputs"]:
-        output_names.add(output["name"])
+        if is_view(output):
+            view_names.add(output["name"])
         need("outputs", template_fields(output["path"]), f"output {output['name']!r} path")
         need("outputs", value_params(output.get("expected_steps")), f"output {output['name']!r} expected_steps")
 
@@ -561,8 +674,8 @@ def _check_semantics(contract: Contract) -> None:
                 raise ContractError(package, "progress", f"{key} does not compile: {exc}") from exc
             if key == "step_pattern" and "step" not in compiled.groupindex:
                 raise ContractError(package, "progress", "step_pattern needs a named group 'step'")
-    if "output" in progress and progress["output"] not in output_names:
-        raise ContractError(package, "progress", f"points at unknown output {progress['output']!r}")
+    if "output" in progress and progress["output"] not in view_names:
+        raise ContractError(package, "progress", f"points at {progress['output']!r}, which is not a snapshots output")
     need("progress", value_params(progress.get("total")), "total")
     for provider in ("progress.py", "artifacts.py"):
         path = contract.pkg_dir / provider
@@ -594,7 +707,10 @@ def _check_semantics(contract: Contract) -> None:
         raise ContractError(package, "selftest", f"params are invalid: {exc}") from exc
     for output in data["outputs"]:
         try:
-            contract.view_descriptor(output, config, growing=True)
+            if is_view(output):
+                contract.view_descriptor(output, config, growing=True)
+            else:
+                contract.output_record(output, config)
         except (KeyError, ValueError) as exc:
             raise ContractError(
                 package, "outputs", f"output {output['name']!r} gives no valid view descriptor: {exc}"
