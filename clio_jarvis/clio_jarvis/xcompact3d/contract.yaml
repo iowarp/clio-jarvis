@@ -101,7 +101,10 @@ summary: >-
   read (beside the geometry, say) and open <run_dir>/data.bp5 in ParaView as
   soon as the job runs to watch it grow. While the run goes, the package syncs
   data.bp5 to the file server every second, so a viewer on another machine
-  sees each snapshot as it lands rather than in 30 s bursts.
+  sees each snapshot as it lands rather than in 30 s bursts. If no live view
+  could follow the run, offer when it ends to open the finished data.bp5 in
+  ParaView (a slice at mid-span coloured by vort, at the last step) and open
+  it once the person agrees.
 install:
   method: spack
   # MPI stays the mpi virtual, so the site's MPI (Ares: its openmpi) is reused.
