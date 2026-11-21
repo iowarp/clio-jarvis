@@ -1,6 +1,6 @@
 schema: clio.package-contract.v1
 package: gray_scott
-version: 0.2.1
+version: 0.2.2
 kind: application
 summary: >-
   ADIOS2 Gray-Scott reaction-diffusion on an L x L x L grid. It writes U and V
@@ -49,7 +49,10 @@ sizing:
   cost: >-
     walltime seconds = L^3 x steps / (throughput x nprocs), with the
     throughput in cell-steps per second per rank measured on the site from a
-    short run; add a margin for the steps / plotgap output writes.
+    short run; add the startup overhead that run measured (environment
+    activation and any service beside it becoming ready, from the run
+    record's per-phase timings when it has them) and a margin for the
+    steps / plotgap output writes.
 
 outputs:
   - name: fields
