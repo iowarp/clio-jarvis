@@ -89,7 +89,7 @@ class SolverWatch:
 
     def observe(self, line: str) -> str | None:
         """Record one output line; the cause when it shows the run diverged."""
-        text = line.strip()
+        text = line.replace("\x00", "").strip()
         if not text:
             return None
         with self.lock:
@@ -142,6 +142,7 @@ _CAUSES = {
     "velocity_blowup": "the velocity grew past {limit:g}",
     "nonfinite_divergence": "the velocity divergence became NaN or infinite",
     "no_output": "the run ended without writing a snapshot",
+    "launch_failed": "the solver exited before its first time step",
 }
 
 
@@ -168,11 +169,15 @@ def verdict(
     # The solver announces each snapshot just before it writes it.
     written = max(watch.snapshots_announced, 1) if has_snapshot(output) else 0
     cause = watch.cause
+    failed = any(code != 0 for code in (return_codes or {}).values())
+    if cause is None and failed and watch.step is None:
+        cause = "launch_failed"
     if cause is None and expected and written == 0:
         cause = "no_output"
-    failed = any(code != 0 for code in (return_codes or {}).values())
     if cause == "no_output":
         status = "no_output"
+    elif cause == "launch_failed":
+        status = "failed"
     elif cause is not None:
         status = "diverged"
     else:
@@ -212,6 +217,12 @@ def verdict(
         result["adapt"] = (
             "Nothing was written. Check that ioutput is at most ilast and that run_dir is writable; "
             "the last lines show where the solver stopped."
+        )
+    elif cause == "launch_failed":
+        result["adapt"] = (
+            "The solver never reached its first time step: the launch or its start failed. The last "
+            "lines hold the launcher's message (rank placement, a missing library, MPI start-up); fix "
+            "that, such as ranks per node against the allocation, before changing the case."
         )
     (run_dir / RESULT_FILE).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result

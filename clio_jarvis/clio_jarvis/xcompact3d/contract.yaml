@@ -124,7 +124,9 @@ summary: >-
   Failed runs: Incompact3d ends a diverged run with exit code 0, and a NaN
   velocity passes its own check, so the package watches the per-step lines.
   It stops the run at the first NaN or infinite velocity or divergence, or a
-  velocity past 100 x inflow, and a run that ends with no snapshot fails too.
+  velocity past 100 x inflow, and a run that ends with no snapshot fails too,
+  as does a solver that exits before its first step (launch_failed, with the
+  launcher's own lines, such as a rank placement the allocation cannot hold).
   Every run writes clio-run-result.json to run_dir (status ok, diverged,
   no_output or failed, the cause, the step and time reached, dt, the velocity
   extremes, snapshots written of expected, seconds per step, the stability
