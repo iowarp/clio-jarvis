@@ -198,8 +198,13 @@ class _ClioPackage:
         """The program, found on the PATH that ``spack load`` of the install query gives."""
         return self.clio_program
 
-    def _clio_mpi(self, command: str, cwd: str) -> None:
-        """Run ``command`` under MPI with stdout on the progress and artifact providers."""
+    def _clio_mpi(self, command: str, cwd: str, line_callback=None, check: bool = True) -> dict[str, int]:
+        """Run ``command`` under MPI with stdout on the progress and artifact providers.
+
+        ``line_callback`` replaces the runtime callback (wrap it to watch the
+        lines too); with ``check`` false the exit codes come back instead of an
+        error.
+        """
         result = Exec(
             command,
             MpiExecInfo(
@@ -208,12 +213,14 @@ class _ClioPackage:
                 hostfile=self.hostfile,
                 env=mpi_safe_env(self.mod_env),
                 cwd=cwd,
-                line_callback=self.runtime_line_callback(),
+                line_callback=line_callback if line_callback is not None else self.runtime_line_callback(),
             ),
         ).run()
-        failures = {host: code for host, code in result.exit_code.items() if code != 0}
-        if failures:
+        codes = dict(result.exit_code)
+        failures = {host: code for host, code in codes.items() if code != 0}
+        if failures and check:
             raise RuntimeError(f"{self.clio_contract().pkg_type} failed: {failures}")
+        return codes
 
     # -- jarvis-cd deployment contract --------------------------------------
 
