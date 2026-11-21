@@ -83,7 +83,7 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 | Part | Holds |
 |---|---|
 | `install` | The Spack spec (`query`) and the Spack repositories (`repos`, relative to the checkout) the package installs from. They become the menu defaults `install_method: spack`, `install_query` and `install_repos` (rewritten relative to the package directory). An MPI pinned in the query is refused. |
-| `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. |
+| `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. `cases` holds rules for one case only, such as a parameter that case uses and the others ignore, so it is checked only when the configuration matches the case's `when`. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
 | `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (`param`, `default: physical_cores` and `cores`, the parameter with the target partition's physical cores per node), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. |
 | `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics` and `restart` outputs are reported as artifacts when the run has written them. |
