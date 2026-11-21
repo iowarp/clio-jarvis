@@ -109,6 +109,7 @@ START_FAILURES = (
     ("mpi_wireup_failed", "unable to reliably start one or more daemons"),
     ("mpi_wireup_failed", "has lost communication with"),
     ("mpi_wireup_failed", "pmix_init failed"),
+    ("mpi_wireup_failed", "received unexpected process identifier"),
     ("mpi_network_unreachable", "no route to host"),
     ("mpi_network_unreachable", "connection refused"),
     ("mpi_init_failed", "mpi_init has failed"),
