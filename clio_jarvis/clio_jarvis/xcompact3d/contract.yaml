@@ -92,9 +92,11 @@ summary: >-
   pilot's startup overhead: the time from the job starting on its nodes to
   the solver's first step, which is activating the package environment plus
   any service started beside the solver becoming ready (a pvserver to watch
-  it, say). When the pilot's run record reports per-phase timings, take the
-  overhead from those phases; otherwise take it as the gap between the job's
-  start time and the first per-step timing line. It does not shrink with the
+  it, say). Take it from the pilot's run record: metadata.phase_timings
+  before_first_step_seconds plus the ready_seconds of each service package
+  in phase_timings.packages. Only when the record has no phase timings, take
+  it as the gap between the job's start time and the first per-step timing
+  line; never guess it. It does not shrink with the
   grid or the step count, and on a short run it can be a large share of the
   wall time. Then project scaling to each candidate: wall seconds = startup
   overhead + seconds per step x ilast + snapshot write seconds x ilast /
@@ -231,8 +233,9 @@ sizing:
     quarter of its walltime), so its seconds per step and write time are
     both measured soon. Project each candidate's wall time as the pilot's
     measured startup overhead (environment activation and any service beside
-    the solver becoming ready, from the run record's per-phase timings when
-    it has them, else job start to first step) plus seconds per step x ilast
+    the solver becoming ready: the run record's phase_timings
+    before_first_step_seconds plus each service's ready_seconds, else job
+    start to first step) plus seconds per step x ilast
     plus the snapshot writes, at no better than the pilot's per-node rate on
     more nodes unless measured. Request that total times a generous safety
     coefficient (1.5 at least, 2 when it rests on one short pilot or none) as

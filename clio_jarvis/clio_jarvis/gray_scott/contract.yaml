@@ -50,8 +50,9 @@ sizing:
     walltime seconds = L^3 x steps / (throughput x nprocs), with the
     throughput in cell-steps per second per rank measured on the site from a
     short run; add the startup overhead that run measured (environment
-    activation and any service beside it becoming ready, from the run
-    record's per-phase timings when it has them) and the steps / plotgap
+    activation and any service beside it becoming ready: the run record's
+    phase_timings before_first_step_seconds plus each service's
+    ready_seconds, else job start to first step) and the steps / plotgap
     output writes, then request that times a generous safety coefficient
     (1.5 at least, 2 when it rests on one short run or none): unused time is
     not charged when the run ends cleanly, so say so in the spend approval,
