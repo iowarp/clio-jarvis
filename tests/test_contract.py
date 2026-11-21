@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -90,6 +91,30 @@ def test_supervisor_lifetime_flag():
     assert supervisor.parse(["--state-dir", "x", "--max-lifetime", "5"]).max_lifetime == 5
     with pytest.raises(SystemExit):
         supervisor.parse(["--state-dir", "x", "--max-lifetime", "0"])
+
+
+def test_supervisor_runs_the_launch_jarvis_built(tmp_path):
+    sys.path.insert(0, str(REPO_PACKAGES_DIR / "pvserver"))
+    try:
+        import supervisor
+    finally:
+        sys.path.pop(0)
+    with pytest.raises(SystemExit):
+        supervisor.parse(["--state-dir", "x", "--nprocs", "2"])
+    launch = tmp_path / "launch.json"
+    launch.write_text(json.dumps({"command": "mpiexec -n 2 pvserver --server-port=1", "env": {}}))
+    with pytest.raises(SystemExit):
+        supervisor.parse(["--state-dir", "x", "--nprocs", "2", "--launch", str(launch)])
+    launch.write_text(json.dumps({
+        "command": f"mpiexec -x A=\"b\" -n 2 pvserver --server-port={supervisor.PORT_PLACEHOLDER}",
+        "env": {"OMPI_MCA_btl_tcp_if_include": "10.0.0.0/8"},
+    }))
+    args = supervisor.parse(["--state-dir", "x", "--nprocs", "2", "--launch", str(launch)])
+    command, environment = supervisor.server_command(args, 4242)
+    assert command == 'mpiexec -x A="b" -n 2 pvserver --server-port=4242'
+    assert environment["OMPI_MCA_btl_tcp_if_include"] == "10.0.0.0/8"
+    single, own = supervisor.server_command(supervisor.parse(["--state-dir", "x"]), 7)
+    assert single[0] == "pvserver" and "--server-port=7" in single and own is None
 
 
 def _copy(package: str, tmp_path: Path) -> Path:
