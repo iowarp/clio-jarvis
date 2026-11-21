@@ -247,7 +247,7 @@ one. Statistics and restart files are off by default (`icheckpoint` and
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; see [Ranks per node](#ranks-per-node). Above 1 rank, jarvis-cd's MPI executor builds the launch, as it does for an MPI application: the chosen MPI's launcher, the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or that node alone, and the resource graph's network. The supervisor runs that launch (`pvserver-launch.json` in `state_dir`) with the port it picks |
+| `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; see [Ranks per node](#ranks-per-node). Above 1 rank, jarvis-cd's MPI executor builds the launch, as it does for an MPI application: the chosen MPI's launcher, the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or that node alone, and the resource graph's network. The supervisor runs that launch with the port it picks. `pvserver-launch.json` in `state_dir` is jarvis-cd's `launch_record()` (`jarvis.mpi-launch.v1`, jarvis-cd 2d26101c or newer) plus the launcher's `env`, so the launch's site-fact `advisories` and `reason_codes` stay as jarvis wrote them; a start failure in `pvserver-stop.json` carries them too |
 | `port` | 0 | TCP port; 0 picks a free one, reported in the ready event and the service runtime |
 | `dataset` | empty | Absolute path, on the site, of the dataset clients open (e.g. xcompact3d's `data.bp5`), named in the service runtime's dataset descriptor; empty means `state_dir` |
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |

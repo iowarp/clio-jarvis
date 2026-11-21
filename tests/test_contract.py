@@ -117,6 +117,38 @@ def test_supervisor_runs_the_launch_jarvis_built(tmp_path):
     assert single[0] == "pvserver" and "--server-port=7" in single and own is None
 
 
+def test_a_start_failure_carries_the_launch_advisories(tmp_path):
+    sys.path.insert(0, str(REPO_PACKAGES_DIR / "pvserver"))
+    try:
+        import supervisor
+    finally:
+        sys.path.pop(0)
+    advisory = {"code": "site_fact_uncertain", "reason_codes": ["ucx_device_unusable"], "severity": "advisory"}
+    launch = tmp_path / "launch.json"
+    launch.write_text(json.dumps({
+        "schema_version": "jarvis.mpi-launch.v1",
+        "command": f"mpiexec -n 2 pvserver --server-port={supervisor.PORT_PLACEHOLDER}",
+        "env": {},
+        "hosts": ["a", "b"],
+        "network": {"applied": {"launcher_env": {"X": "1"}}},
+        "advisories": [advisory, "not-a-dict"],
+    }))
+    args = supervisor.parse(["--state-dir", str(tmp_path), "--nprocs", "2", "--launch", str(launch)])
+    record = supervisor.Supervisor(args).diagnosis("exited_before_ready")
+    assert record["advisories"] == [advisory, "not-a-dict"]
+    assert record["reason_codes"] == ["ucx_device_unusable"]
+    assert record["hosts"] == ["a", "b"]
+    plain = supervisor.Supervisor(supervisor.parse(["--state-dir", str(tmp_path)])).diagnosis("start_timeout")
+    assert "advisories" not in plain and "reason_codes" not in plain
+
+
+def test_pvserver_keeps_jarvis_after_steps_default():
+    # A view that outlives the solver is the person's choice; the package sets no after_steps of its own.
+    contract = load_contract(REPO_PACKAGES_DIR / "pvserver")
+    assert "after_steps" not in {entry["name"] for entry in contract.menu}
+    assert "after_steps" not in (contract.data.get("parameters") or {}).get("properties", {})
+
+
 def _copy(package: str, tmp_path: Path) -> Path:
     target = tmp_path / package
     shutil.copytree(REPO_PACKAGES_DIR / package, target, ignore=shutil.ignore_patterns("__pycache__"))
@@ -268,6 +300,40 @@ def test_adapter_ignores_other_packages():
     from clio_jarvis._contract.runtime import progress_adapter
 
     assert progress_adapter(REPO_PACKAGES_DIR / "gray_scott", {"pkg_type": "builtin.gray_scott"}) is None
+
+
+def test_pvserver_launch_file_is_jarvis_launch_record():
+    from clio_jarvis.pvserver.pkg import launch_document
+
+    record = {
+        "schema_version": "jarvis.mpi-launch.v1",
+        "built_by": "jarvis_cd.shell.mpi_exec.OpenMpiExec",
+        "command": "mpiexec -n 2 pvserver --server-port=@PORT@",
+        "nprocs": 2,
+        "advisories": [{"code": "site_fact_uncertain", "reason_codes": ["ucx_device_unusable"]}],
+        "launch_json": "/x/provenance/launch-001/launch.json",
+    }
+
+    class Info:
+        env = {"OMPI_MCA_btl": "self,tcp"}
+
+    class Launch:
+        exec_info = Info()
+
+        def launch_record(self):
+            return dict(record)
+
+        def get_cmd(self):
+            return "unused"
+
+    document = launch_document(Launch())
+    assert document == {**record, "env": {"OMPI_MCA_btl": "self,tcp"}}
+
+    class Old(Launch):
+        launch_record = None
+
+    with pytest.raises(RuntimeError, match="launch_record"):
+        launch_document(Old())
 
 
 # -- package helpers --------------------------------------------------------------------
