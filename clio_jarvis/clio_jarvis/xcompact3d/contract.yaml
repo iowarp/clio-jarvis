@@ -53,6 +53,22 @@ summary: >-
   point-steps per second per MPI rank measured from a short run of the same
   build (see sizing); set walltime with a margin. nprocs must split the grid
   into a 2D pencil grid; configure refuses one that cannot.
+  Before production, in order. Installs: when the run needs more than one
+  package (this solver and a pvserver to watch it, say), submit each install
+  through the normal install path as soon as it is known, all together; they
+  do not depend on each other, so do not wait for one to finish before
+  starting the next. Install what the candidates offer, and use a site's own
+  build only when it is offered as a candidate and the person picks it.
+  Smoke: one smoke run per build, of the case to be run, not one per case;
+  the parameter checks before submit already cover dt, the case's parameters
+  and the decomposition, so a second smoke of another case tells nothing new.
+  When the production grid fits one solver node, that smoke is the pilot:
+  run it at the production grid and inputs on one node with ilast two
+  snapshots, and size production from its seconds per step; the solver and
+  its inputs are the same, so production gives the same results without a
+  separate pilot job and its queue wait. With no earlier run to estimate
+  from, set its ioutput to a few hundred steps so a snapshot still lands
+  early. Run a separate pilot only when the grid needs more than one node.
   Fitting the person's budget: size production to the time and nodes the
   person gave (say, results within an hour on up to 8 nodes), not to the
   finest grid the cluster could hold. Measure first. A pilot is a short run
@@ -65,8 +81,8 @@ summary: >-
   a thin periodic span (nz near 8) can run slower per step on two nodes than
   on one. It exists to measure seconds per step and the cost of one snapshot
   write, so it must write a snapshot early: estimate its seconds per step
-  from the smoke run's throughput (point-steps per second per rank) before
-  submitting, set its ioutput so the first snapshot lands within the first
+  from the smoke run's throughput (point-steps per second per rank), when
+  the smoke was not itself the pilot, before submitting, set its ioutput so the first snapshot lands within the first
   quarter of its walltime, and its ilast to two snapshots. A pilot that hits
   its walltime before a snapshot measured nothing about the writes and is
   wasted. Read the seconds per step from the solver's per-step timing lines,
@@ -172,7 +188,7 @@ sizing:
     throughput in point-steps per second per rank measured on the site with a
     short run of the same build and rank count range; add a margin for
     snapshot writes, which grow with nx x ny x nz x 7 doubles per snapshot.
-    A pilot runs on the fewest nodes that hold the grid, one solver node
+    A pilot (the smoke itself when the grid fits one node) runs on the fewest nodes that hold the grid, one solver node
     when it fits, and writes a snapshot early (first snapshot in the first
     quarter of its walltime), so its seconds per step and write time are
     both measured soon. Project each candidate's wall time from the pilot's
