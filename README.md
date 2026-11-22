@@ -189,7 +189,10 @@ cores only when every rank runs here, and otherwise leaves placement to
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/gs.bp` |
 
 On 4 Ares ranks the defaults write an output step about every 2.7 s, for
-about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe.
+about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe. Each
+rank starts through the same flusher as xcompact3d (see **Live output on a
+shared file system** below), syncing `gs.bp` every second on every node with
+solver ranks, so a viewer on another node follows it step by step.
 
 ### xcompact3d
 
@@ -290,6 +293,14 @@ builds, and the one Spack 0.23.1 prefers. The
 supervisor writes `pvserver-ready.json` when the port is listening and
 `pvserver-stop.json` when it stops (`clio.service-stop.v1`, with the reason).
 They go to `state_dir`, `{shared_dir}/pvserver` by default.
+
+Network fallback warnings in pvserver's output (UCX `WARN`, libfabric
+`<warn>`, Open MPI skipping an OpenFabrics port) are told apart the same way
+as in xcompact3d: the supervisor carries its own standard-library copy of
+`_contract/transport.py`'s classifier, keeps those lines out of the failure
+evidence and the start-failure cause, and reports them in `pvserver-stop.json`
+under `transport` as information. The start error repeats them as a
+`network info, not the cause` line.
 
 When JARVIS binds a service runtime (`JARVIS_SERVICE_RUNTIME_PATH`), the
 supervisor reports through jarvis-cd's `ServiceRuntimeReporter`: `starting`

@@ -115,6 +115,28 @@ def parse(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+#: BP5 writes a step's data files first, then the metadata and the index that names them.
+BP5_FIRST = ("data.*",)
+BP5_LAST = ("md.0", "mmd.0", "md.idx")
+
+
+def bp5_command(output, program: list[str], every: float = 1.0) -> str:
+    """A rank's shell command: ``program`` with a flusher of the BP5 directory ``output`` on its node.
+
+    The wrapper runs with the Python running this function (the one that runs
+    JARVIS), named by its absolute path, so the MPI launch can start it on
+    any node that shares the file system.
+    """
+    import shlex
+
+    wrapper = [sys.executable, os.path.abspath(__file__), "--output", str(output), "--every", repr(float(every))]
+    for pattern in BP5_FIRST:
+        wrapper += ["--first", pattern]
+    for name in BP5_LAST:
+        wrapper += ["--last", name]
+    return shlex.join(wrapper + ["--"] + [str(part) for part in program])
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse(sys.argv[1:] if argv is None else argv)
     if is_node_leader():

@@ -19,9 +19,7 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -393,6 +391,4 @@ def flushed_command(output: Path, program: list[str]) -> str:
     """
     from clio_jarvis._contract import flushwrap
 
-    wrapper = [sys.executable, flushwrap.__file__, "--output", str(output), "--every", repr(FLUSH_SECONDS)]
-    wrapper += ["--first", "data.*", "--last", "md.0", "--last", "mmd.0", "--last", "md.idx", "--"]
-    return shlex.join(wrapper + [str(part) for part in program])
+    return flushwrap.bp5_command(output, program, FLUSH_SECONDS)

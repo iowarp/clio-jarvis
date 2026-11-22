@@ -417,12 +417,104 @@ def test_xcompact3d_ranks_start_through_the_node_flusher(tmp_path):
     from clio_jarvis.xcompact3d.pkg import FLUSH_SECONDS, flushed_command
 
     words = shlex.split(flushed_command(tmp_path / "data.bp5", ["/opt/x 3d/xcompact3d", "input.i3d"]))
-    assert words[:2] == [sys.executable, flushwrap.__file__]
+    assert words[:2] == [sys.executable, os.path.abspath(flushwrap.__file__)]
     assert words[-3:] == ["--", "/opt/x 3d/xcompact3d", "input.i3d"]
     args = flushwrap.parse(words[2:])
     assert args.output == str(tmp_path / "data.bp5") and args.every == FLUSH_SECONDS
     assert args.first == ["data.*"] and args.last == ["md.0", "mmd.0", "md.idx"]
     assert args.program == ["/opt/x 3d/xcompact3d", "input.i3d"]
+
+
+def test_gray_scott_ranks_start_through_the_node_flusher(tmp_path):
+    import shlex
+
+    from clio_jarvis._contract import flushwrap
+    from clio_jarvis.gray_scott.pkg import FLUSH_SECONDS, GrayScott
+
+    seen = {}
+    package = GrayScott.__new__(GrayScott)
+    package.config = {"run_dir": str(tmp_path / "run")}
+    package._clio_ensure_configured = lambda prepare: None
+    package.clio_executable = lambda: "/opt/gs dir/gray-scott"
+    package._clio_mpi = lambda command, cwd: seen.update(command=command, cwd=cwd)
+    package.start()
+    words = shlex.split(seen["command"])
+    assert seen["cwd"] == str(tmp_path / "run")
+    assert words[:2] == [sys.executable, os.path.abspath(flushwrap.__file__)]
+    args = flushwrap.parse(words[2:])
+    assert args.output == str(tmp_path / "run" / "gs.bp") and args.every == FLUSH_SECONDS
+    assert args.first == ["data.*"] and args.last == ["md.0", "mmd.0", "md.idx"]
+    assert args.program == ["/opt/gs dir/gray-scott", "settings.json"]
+
+
+def _supervisor_module():
+    sys.path.insert(0, str(REPO_PACKAGES_DIR / "pvserver"))
+    try:
+        import supervisor
+    finally:
+        sys.path.pop(0)
+    return supervisor
+
+
+def test_supervisor_transport_classifier_is_the_contract_copy():
+    from clio_jarvis._contract import transport
+
+    supervisor = _supervisor_module()
+    for name in ("UCX_WARN", "LIBFABRIC_WARN", "OPENFABRICS_SKIP", "UNAVAILABLE", "BARE_UNAVAILABLE", "OFFERED"):
+        ours, theirs = getattr(supervisor, name), getattr(transport, name)
+        assert (ours.pattern, ours.flags) == (theirs.pattern, theirs.flags), name
+    assert supervisor.TRANSPORT_SETTINGS == transport.SETTINGS
+    assert (supervisor.TRANSPORT_NOTE, supervisor.TRANSPORT_NOTE_EARLY) == (transport.NOTE, transport.NOTE_EARLY)
+    lines = [UCX_SKIP, "libfabric:4242:1763766000::verbs:fabric:vrb_get_info():123<warn> no RDMA devices found",
+             "[comp-05:4242:0] ucp_ep.c:1500 UCX  ERROR  failed to connect: Connection refused", "Waiting for client..."]
+    for line in lines:
+        assert supervisor.transport_library(line) == transport.library(line)
+    copy, source = supervisor.TransportNotes(), transport.TransportNotes()
+    for line in lines:
+        assert copy.observe(line) == source.observe(line)
+    env = {"UCX_TLS": "tcp", "PATH": "/usr/bin"}
+    assert copy.report(env) == source.report(env) and copy.report(env, progressed=False) == source.report(env, progressed=False)
+
+
+def test_supervisor_keeps_transport_warnings_out_of_the_evidence(tmp_path):
+    import io
+
+    supervisor = _supervisor_module()
+    watcher = supervisor.Supervisor(supervisor.parse(["--state-dir", str(tmp_path)]))
+    watcher.stdout_open = False
+    refused = "[comp-05:4242:0] ucp_ep.c:1500 UCX  ERROR  failed to connect: Connection refused"
+    warning = UCX_SKIP.replace("network device", "connection refused on network device")
+    log = io.StringIO()
+    watcher.forward(io.StringIO("\n".join([UCX_SKIP, warning, "Waiting for client..."]) + "\n"), log)
+    assert UCX_SKIP in log.getvalue()
+    assert list(watcher.recent) == ["Waiting for client..."] and watcher.failure is None
+    early = watcher.diagnosis("exited_before_ready")
+    assert early["evidence"] == ["Waiting for client..."]
+    assert early["transport"]["unavailable"] == ["mlx5_0:1"] and early["transport"]["note"] == supervisor.TRANSPORT_NOTE_EARLY
+    watcher.forward(io.StringIO(refused + "\n"), log)
+    assert watcher.failure[0] == "mpi_network_unreachable" and watcher.recent[-1] == refused
+
+    clean = supervisor.Supervisor(supervisor.parse(["--state-dir", str(tmp_path)]))
+    assert "transport" not in clean.diagnosis("start_timeout")
+
+
+def test_pvserver_start_error_reports_a_fallback_as_information(tmp_path):
+    from clio_jarvis.pvserver.pkg import Pvserver
+
+    supervisor = _supervisor_module()
+    notes = supervisor.TransportNotes()
+    notes.observe(UCX_SKIP)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "pvserver.log").write_text("Waiting for client...\n")
+    record = {"reason": "start_failed", "cause": {"code": "start_timeout", "message": "rank 0 did not listen"},
+              "transport": notes.report({}, progressed=False)}
+    package = Pvserver.__new__(Pvserver)
+    package._read_json = lambda name: record
+    package._state = lambda name: state / name
+    text = package._start_failure()
+    assert "network info, not the cause: ucx skipped mlx5_0:1 and used tcp" in text
+    assert text.index("network info") < text.index("log tail")
 
 
 def test_flushwrap_leader_and_order(tmp_path, monkeypatch):
