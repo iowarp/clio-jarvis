@@ -254,7 +254,9 @@ nodes `host_slice` gives the solver. The node-local rank comes from the
 launcher's environment (Open MPI, Hydra, PALS, MVAPICH2 or srun); without one
 every rank flushes. The run's verdict reads `md.idx` through an open
 descriptor, which makes a network file system client fetch fresh attributes,
-and, when the solver announced snapshots, keeps reading it for up to 10 s, so
+lists the directories above it if the name looks missing (the client also
+caches "no such file" from a look before the solver created it), and, when
+the solver announced snapshots, keeps reading it for up to 10 s, so
 a run written from another node is not judged `no_output` from a stale size.
 
 ### pvserver

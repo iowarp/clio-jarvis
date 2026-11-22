@@ -5,6 +5,12 @@ node that did not write the file can return the size it saw seconds or
 minutes ago, so a finished run looks empty. Opening the file makes the
 client revalidate them (close-to-open consistency), so :func:`fresh_size`
 opens the file and asks the open descriptor.
+
+The client also remembers that a name did not exist. A node that looked for a
+file before another node created it can keep failing ``open()`` for minutes,
+while listing the parent directory shows the new name at once. So when the
+open finds nothing, :func:`fresh_size` lists the directories above the file
+and tries once more.
 """
 
 from __future__ import annotations
@@ -14,9 +20,29 @@ import time
 from pathlib import Path
 
 
+def _relist_parents(path: Path | str) -> None:
+    """List the directories above ``path``, nearest existing one first and then downward."""
+    chain = list(Path(os.path.abspath(path)).parents)
+    for found, directory in enumerate(chain):
+        try:
+            os.listdir(directory)
+        except OSError:
+            continue
+        for below in reversed(chain[:found]):
+            try:
+                os.listdir(below)
+            except OSError:
+                return
+        return
+
+
 def fresh_size(path: Path | str) -> int:
     """The size of ``path`` as the file server holds it now; raises ``OSError``."""
-    fd = os.open(path, os.O_RDONLY)
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        _relist_parents(path)
+        fd = os.open(path, os.O_RDONLY)
     try:
         return os.fstat(fd).st_size
     finally:

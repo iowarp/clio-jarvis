@@ -301,6 +301,34 @@ def test_xcompact3d_snapshot_check_ignores_a_stale_stat(tmp_path, monkeypatch):
     assert health.has_snapshot(output, wait_seconds=0)
 
 
+def test_fresh_size_relists_parents_when_a_name_looks_missing(tmp_path, monkeypatch):
+    from clio_jarvis._contract import files
+
+    index = tmp_path / "run" / "data.bp5" / "md.idx"
+    index.parent.mkdir(parents=True)
+    index.write_bytes(b"x" * 547)
+    real_open, real_listdir = os.open, os.listdir
+    listed = []
+
+    def cached_miss(path, *args, **kwargs):
+        # What a node that looked before the file existed gets until a directory listing.
+        if Path(path) == index and Path(index.parent) not in listed:
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    def listdir(path):
+        listed.append(Path(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(files.os, "open", cached_miss)
+    monkeypatch.setattr(files.os, "listdir", listdir)
+    assert files.fresh_size(index) == 547
+    assert listed[0] == index.parent
+    with pytest.raises(FileNotFoundError):
+        files.fresh_size(tmp_path / "run" / "absent" / "md.idx")
+    assert tmp_path / "run" in listed
+
+
 def test_xcompact3d_snapshot_check_waits_for_a_late_index(tmp_path):
     import threading
 
