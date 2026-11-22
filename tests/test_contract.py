@@ -329,6 +329,66 @@ def test_fresh_size_relists_parents_when_a_name_looks_missing(tmp_path, monkeypa
     assert tmp_path / "run" in listed
 
 
+UCX_SKIP = (
+    "[1763766000.123456] [comp-05:4242:0]  ucp_context.c:1081 UCX  WARN  network device 'mlx5_0:1' "
+    "is not available, please use one or more of: 'eno1'(tcp), 'lo'(tcp)"
+)
+
+
+def test_transport_warnings_are_told_from_errors():
+    from clio_jarvis._contract import transport
+
+    assert transport.library(UCX_SKIP) == "ucx"
+    assert transport.library("libfabric:4242:1763766000::verbs:fabric:vrb_get_info():123<warn> no RDMA devices found") == "libfabric"
+    assert transport.library("No OpenFabrics connection schemes reported that they were able to be used on a specific port.") == "openfabrics"
+    assert transport.library("[comp-05:4242:0] ucp_ep.c:1500 UCX  ERROR  failed to connect: Connection refused") is None
+    assert transport.library("Time step =  20/900, Time unit =   0.2000") is None
+    assert transport.TransportNotes().report() is None
+
+
+def _xcompact3d_verdict(tmp_path, lines, *, index_bytes, codes=None, env=None):
+    from clio_jarvis.xcompact3d import health
+
+    watch = health.SolverWatch(None, velocity_limit=health.VELOCITY_LIMIT)
+    for line in lines:
+        watch(" stdout", line)
+    output = tmp_path / "data.bp5"
+    output.mkdir()
+    (output / "md.idx").write_bytes(b"i" * index_bytes)
+    config = {"ilast": 40, "ioutput": 20, "dt": 0.005, "re": 1600}
+    return health.verdict(watch, run_dir=tmp_path, output=output, config=config, case={}, return_codes=codes or {"0": 0}, launch_env=env)
+
+
+def test_xcompact3d_reports_a_transport_fallback_as_information(tmp_path):
+    steps = [UCX_SKIP, UCX_SKIP.replace("comp-05", "comp-06"), "Time step =  20/40, Time unit =   0.1000", "Writing snapshots =>  1",
+             "Time step =  40/40, Time unit =   0.2000", "Writing snapshots =>  2"]
+    result = _xcompact3d_verdict(tmp_path, steps, index_bytes=200, env={"UCX_TLS": "tcp,self,sm", "PATH": "/usr/bin"})
+    assert result["status"] == "ok" and result["cause"] is None
+    transport = result["transport"]
+    assert transport["fallback"] and transport["libraries"] == ["ucx"]
+    assert transport["unavailable"] == ["mlx5_0:1"] and transport["offered"] == {"tcp": ["eno1", "lo"]}
+    assert transport["used"].startswith("tcp") and transport["warning_lines"] == 2
+    assert transport["launch_settings"] == {"UCX_TLS": "tcp,self,sm"}
+    assert not any("UCX" in line for line in result["last_lines"])
+
+
+def test_xcompact3d_never_blames_a_transport_fallback(tmp_path):
+    from clio_jarvis.xcompact3d import health
+
+    empty = _xcompact3d_verdict(tmp_path, [UCX_SKIP, "Time step =  40/40, Time unit =   0.2000"], index_bytes=64)
+    assert empty["status"] == "no_output" and empty["cause"] == "no_output"
+    assert empty["transport"]["note"] and "not the cause" in empty["adapt"]
+    assert "info, not the cause" in health.describe(empty, tmp_path)
+    assert not any("UCX" in line for line in empty["last_lines"])
+
+    early = tmp_path / "early"
+    early.mkdir()
+    failed = _xcompact3d_verdict(early, [UCX_SKIP, "error while loading shared libraries: libfftw3.so.3"], index_bytes=64, codes={"0": 127})
+    assert failed["cause"] == "launch_failed"
+    assert failed["last_lines"] == ["error while loading shared libraries: libfftw3.so.3"]
+    assert "does not explain" in failed["transport"]["note"]
+
+
 def test_xcompact3d_snapshot_check_waits_for_a_late_index(tmp_path):
     import threading
 

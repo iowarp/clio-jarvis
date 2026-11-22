@@ -167,7 +167,12 @@ summary: >-
   no_output or failed, the cause, the step and time reached, dt, the velocity
   extremes, snapshots written of expected, seconds per step, the stability
   numbers and the last solver lines), and a failed run raises with that
-  evidence. A diverged run needs a smaller dt (case.suggested_dt is the
+  evidence. Network fallback warnings (UCX or libfabric skipping a device it
+  cannot use, Open MPI skipping an OpenFabrics port) are kept out of the last
+  lines and reported under transport as information: the device skipped, the
+  transport offered instead and the launch's transport settings. They are
+  never the cause of a verdict and do not call for a site network change. A
+  diverged run needs a smaller dt (case.suggested_dt is the
   bound; halve dt if it diverged within it) or a body thick enough on the
   grid; a no_output run needs ioutput at most ilast. Change the case before
   resubmitting; the same inputs diverge the same way.

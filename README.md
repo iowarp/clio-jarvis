@@ -259,6 +259,17 @@ caches "no such file" from a look before the solver created it), and, when
 the solver announced snapshots, keeps reading it for up to 10 s, so
 a run written from another node is not judged `no_output` from a stale size.
 
+**Network fallback warnings.** UCX and libfabric print a warning when a fast
+device such as `mlx5_0:1` is missing or down, then carry on over another
+transport, often TCP. `clio_jarvis/_contract/transport.py` picks those
+warning lines out (UCX `WARN`, libfabric `<warn>`, Open MPI skipping an
+OpenFabrics port; error lines are left alone). The xcompact3d result keeps
+them out of `last_lines` and reports them under `transport` as information:
+the libraries, the device skipped, the transport offered instead, the
+launch's transport settings (`UCX_TLS`, `FI_PROVIDER`, `OMPI_MCA_pml` and so
+on) and a note that they are not the cause. They never set a `failed` or
+`no_output` verdict.
+
 ### pvserver
 
 | Parameter | Default | Meaning |

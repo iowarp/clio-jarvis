@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from clio_jarvis._contract.files import wait_for_size
+from clio_jarvis._contract.transport import TransportNotes
 
 RESULT_FILE = "clio-run-result.json"
 RESULT_SCHEMA = "clio.xcompact3d-run.v1"
@@ -75,6 +76,8 @@ class SolverWatch:
         self.cause: str | None = None
         self.cause_line: str | None = None
         self.recent: deque[str] = deque(maxlen=12)
+        # Network fallback warnings, kept out of ``recent`` so they never read as the failure.
+        self.transport = TransportNotes()
 
     def __getattr__(self, name: str) -> Any:
         # finalize and finalize_process belong to the progress and artifact callback.
@@ -93,6 +96,8 @@ class SolverWatch:
         """Record one output line; the cause when it shows the run diverged."""
         text = line.replace("\x00", "").strip()
         if not text:
+            return None
+        if self.transport.observe(text):
             return None
         with self.lock:
             self.recent.append(text)
@@ -170,8 +175,14 @@ def verdict(
     config: dict[str, Any],
     case: dict[str, Any],
     return_codes: dict[str, int] | None,
+    launch_env: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Judge the run, write clio-run-result.json and return it."""
+    """Judge the run, write clio-run-result.json and return it.
+
+    Network fallback warnings go to ``transport`` as information; they never
+    set the cause, which comes only from the solver's lines, its exit codes
+    and its output.
+    """
     ilast, ioutput = int(config["ilast"]), int(config["ioutput"])
     expected = ilast // ioutput if ioutput > 0 else 0
     # The solver announces each snapshot just before it writes it; only then is a late index worth waiting for.
@@ -211,6 +222,7 @@ def verdict(
         "seconds_per_step": round(sum(seconds) / len(seconds), 4) if seconds else None,
         "stability_lines": watch.stability,
         "last_lines": list(watch.recent),
+        "transport": watch.transport.report(launch_env, progressed=watch.step is not None),
         "return_codes": return_codes,
         "case": {key: case[key] for key in ("case", "grid", "spacing", "decomposition", "cfl", "diffusion_number", "suggested_dt", "points_across_body") if key in case},
         "output": str(output),
@@ -233,6 +245,11 @@ def verdict(
             "lines hold the launcher's message (rank placement, a missing library, MPI start-up); fix "
             "that, such as ranks per node against the allocation, before changing the case."
         )
+    if result["transport"] and status != "ok":
+        result["adapt"] = (result.get("adapt", "") + " " + (
+            "The network warnings under transport are a fallback the library recovered from, not "
+            "the cause; leave the site's network settings as they are."
+        )).strip()
     (run_dir / RESULT_FILE).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -255,5 +272,15 @@ def describe(result: dict[str, Any], run_dir: Path) -> str:
     parts.append(f"; snapshots {result['snapshots_written']}/{result['snapshots_expected']}")
     if result.get("evidence_line"):
         parts.append(f"; solver said: {result['evidence_line']}")
+    transport = result.get("transport")
+    if transport:
+        parts.append(f"; {transport_summary(transport)}")
     parts.append(f"; details in {run_dir / RESULT_FILE}")
     return "".join(parts)
+
+
+def transport_summary(transport: dict[str, Any]) -> str:
+    """One line for a network fallback, worded as information."""
+    skipped = ", ".join(transport.get("unavailable") or []) or "a device"
+    libraries = "/".join(transport.get("libraries") or [])
+    return f"info, not the cause: {libraries} skipped {skipped} and used {transport['used']}"
