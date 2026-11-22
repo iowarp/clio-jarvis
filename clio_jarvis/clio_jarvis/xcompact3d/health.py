@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from clio_jarvis._contract.files import wait_for_size
+
 RESULT_FILE = "clio-run-result.json"
 RESULT_SCHEMA = "clio.xcompact3d-run.v1"
 #: Incompact3d's own limit on the velocity maximum; the watch applies it to the minimum too.
@@ -146,12 +148,18 @@ _CAUSES = {
 }
 
 
-def has_snapshot(output: Path) -> bool:
-    """True when the BP5 index holds a step: more than its 64-byte header."""
-    try:
-        return (output / "md.idx").stat().st_size > 64
-    except OSError:
-        return False
+#: Seconds to keep looking for the first step in the index before a run counts as without output.
+SNAPSHOT_WAIT_SECONDS = 10.0
+
+
+def has_snapshot(output: Path, wait_seconds: float = SNAPSHOT_WAIT_SECONDS) -> bool:
+    """True when the BP5 index holds a step: more than its 64-byte header.
+
+    The solver may have run on another node, so the size is read through an
+    open descriptor, which a shared file system revalidates, and an index
+    that still looks empty is read again for up to ``wait_seconds``.
+    """
+    return wait_for_size(output / "md.idx", 64, seconds=wait_seconds)
 
 
 def verdict(
@@ -166,8 +174,9 @@ def verdict(
     """Judge the run, write clio-run-result.json and return it."""
     ilast, ioutput = int(config["ilast"]), int(config["ioutput"])
     expected = ilast // ioutput if ioutput > 0 else 0
-    # The solver announces each snapshot just before it writes it.
-    written = max(watch.snapshots_announced, 1) if has_snapshot(output) else 0
+    # The solver announces each snapshot just before it writes it; only then is a late index worth waiting for.
+    announced = watch.snapshots_announced
+    written = max(announced, 1) if has_snapshot(output, SNAPSHOT_WAIT_SECONDS if announced else 0.0) else 0
     cause = watch.cause
     failed = any(code != 0 for code in (return_codes or {}).values())
     if cause is None and failed and watch.step is None:

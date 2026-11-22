@@ -282,6 +282,119 @@ def test_xcompact3d_progress_and_artifact_from_stdout(tmp_path):
     assert failed.finalize_progress_for_exit(3)[-1].state.value == "failed"
 
 
+def test_xcompact3d_snapshot_check_ignores_a_stale_stat(tmp_path, monkeypatch):
+    from clio_jarvis.xcompact3d import health
+
+    output = tmp_path / "data.bp5"
+    output.mkdir()
+    (output / "md.idx").write_bytes(b"x" * 547)
+    real_stat = Path.stat
+
+    def stale(self, *args, **kwargs):
+        result = real_stat(self, *args, **kwargs)
+        if self.name != "md.idx":
+            return result
+        # What another node's cached attributes gave: the 64-byte header only.
+        return os.stat_result((result.st_mode, result.st_ino, result.st_dev, result.st_nlink, result.st_uid, result.st_gid, 64, 0, 0, 0))
+
+    monkeypatch.setattr(Path, "stat", stale)
+    assert health.has_snapshot(output, wait_seconds=0)
+
+
+def test_xcompact3d_snapshot_check_waits_for_a_late_index(tmp_path):
+    import threading
+
+    from clio_jarvis.xcompact3d import health
+
+    output = tmp_path / "data.bp5"
+    output.mkdir()
+    index = output / "md.idx"
+    index.write_bytes(b"h" * 64)
+    assert not health.has_snapshot(output, wait_seconds=0)
+    assert not health.has_snapshot(tmp_path / "missing.bp5", wait_seconds=0.2)
+    late = threading.Timer(0.3, lambda: index.write_bytes(b"h" * 64 + b"s" * 64))
+    late.start()
+    try:
+        started = time.monotonic()
+        assert health.has_snapshot(output, wait_seconds=5)
+        assert time.monotonic() - started < 4
+    finally:
+        late.cancel()
+
+
+def test_xcompact3d_ranks_start_through_the_node_flusher(tmp_path):
+    import shlex
+
+    from clio_jarvis._contract import flushwrap
+    from clio_jarvis.xcompact3d.pkg import FLUSH_SECONDS, flushed_command
+
+    words = shlex.split(flushed_command(tmp_path / "data.bp5", ["/opt/x 3d/xcompact3d", "input.i3d"]))
+    assert words[:2] == [sys.executable, flushwrap.__file__]
+    assert words[-3:] == ["--", "/opt/x 3d/xcompact3d", "input.i3d"]
+    args = flushwrap.parse(words[2:])
+    assert args.output == str(tmp_path / "data.bp5") and args.every == FLUSH_SECONDS
+    assert args.first == ["data.*"] and args.last == ["md.0", "mmd.0", "md.idx"]
+    assert args.program == ["/opt/x 3d/xcompact3d", "input.i3d"]
+
+
+def test_flushwrap_leader_and_order(tmp_path, monkeypatch):
+    from clio_jarvis._contract import flushwrap
+
+    assert flushwrap.is_node_leader({})
+    assert flushwrap.is_node_leader({"OMPI_COMM_WORLD_LOCAL_RANK": "0"})
+    assert not flushwrap.is_node_leader({"MPI_LOCALRANKID": "3"})
+    assert not flushwrap.is_node_leader({"SLURM_LOCALID": "1"})
+    for name in ("md.idx", "data.1", "md.0", "data.0", "profiling.json"):
+        (tmp_path / name).write_bytes(b"x")
+    synced = []
+    real_open = os.open
+    names = {}
+
+    def tracking_open(path, flags, *args):
+        fd = real_open(path, flags, *args)
+        names[fd] = os.path.basename(path)
+        return fd
+
+    monkeypatch.setattr(flushwrap.os, "open", tracking_open)
+    monkeypatch.setattr(flushwrap.os, "fsync", lambda fd: synced.append(names[fd]))
+    assert flushwrap.flush_once(str(tmp_path), ["data.*"], ["md.0", "mmd.0", "md.idx"]) == 4
+    assert synced == ["data.0", "data.1", "md.0", "md.idx"]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="the wrapper forks, as on the compute nodes")
+def test_flushwrap_runs_the_program_as_the_rank(tmp_path):
+    from clio_jarvis._contract import flushwrap
+
+    output = tmp_path / "data.bp5"
+    output.mkdir()
+    (output / "md.idx").write_bytes(b"x")
+    script = "import os, sys, time; print(os.getpid(), flush=True); time.sleep(0.5); sys.exit(3)"
+    started = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, flushwrap.__file__, "--output", str(output), "--every", "0.1", "--last", "md.idx", "--", sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    # The program's status is the rank's, and its output ends with it: the flusher holds no stream open.
+    assert done.returncode == 3
+    assert done.stdout.strip().isdigit()
+    assert time.monotonic() - started < 10
+    for _ in range(50):
+        flushers = [p for p in os.listdir("/proc") if p.isdigit() and _cmdline(p).count(str(output))] if os.path.isdir("/proc") else []
+        if not flushers:
+            break
+        time.sleep(0.1)
+    assert not flushers, "the flusher outlived the program"
+
+
+def _cmdline(pid: str) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+    except OSError:
+        return ""
+
+
 def test_pvserver_ready_reports_the_chosen_port():
     from clio_jarvis._contract.runtime import artifact_adapter, progress_adapter
 

@@ -1,0 +1,42 @@
+"""File sizes that a shared file system cannot serve stale.
+
+A network file system client caches a file's attributes. A ``stat()`` on a
+node that did not write the file can return the size it saw seconds or
+minutes ago, so a finished run looks empty. Opening the file makes the
+client revalidate them (close-to-open consistency), so :func:`fresh_size`
+opens the file and asks the open descriptor.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+
+
+def fresh_size(path: Path | str) -> int:
+    """The size of ``path`` as the file server holds it now; raises ``OSError``."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        return os.fstat(fd).st_size
+    finally:
+        os.close(fd)
+
+
+def wait_for_size(path: Path | str, more_than: int, seconds: float = 10.0, interval: float = 0.5) -> bool:
+    """True once ``path`` holds more than ``more_than`` bytes, trying for up to ``seconds``.
+
+    A writer on another node may still be pushing its last bytes to the file
+    server when this node looks, so a missing or short file is retried before
+    it counts as absent.
+    """
+    deadline = time.monotonic() + max(0.0, seconds)
+    while True:
+        try:
+            if fresh_size(path) > more_than:
+                return True
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
