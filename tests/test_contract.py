@@ -744,6 +744,169 @@ def test_supervisor_restarts_after_a_client_session(tmp_path):
     assert counter.read_text() == "2"
 
 
+# -- pvserver linger after the solver ---------------------------------------------------
+
+
+def test_pvserver_linger_is_a_service_setting_with_a_default():
+    contract = load_contract(REPO_PACKAGES_DIR / "pvserver")
+    names = {entry["name"] for entry in contract.menu}
+    base = {k: v for k, v in contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)}).items() if k in names}
+    assert base["linger"] == 600
+    contract.check_parameters(base)
+    assert contract.service(base)["linger"] == 600
+    contract.check_parameters({**base, "linger": 0})
+    contract.check_parameters({**base, "linger": 10 * 365 * 86400})
+    with pytest.raises(ValueError, match="linger"):
+        contract.check_parameters({**base, "linger": -1})
+
+
+def test_scheduler_durations():
+    supervisor = _supervisor_module()
+    parse = supervisor.parse_scheduler_duration
+    assert parse("1-02:03:04") == 86400 + 2 * 3600 + 3 * 60 + 4
+    assert parse("02:03:04") == 2 * 3600 + 3 * 60 + 4
+    assert parse("3:04") == 3 * 60 + 4
+    assert parse("7") == 7 * 60
+    assert parse("2-05") == 2 * 86400 + 5 * 3600
+    assert parse("  0:59 \n") == 59
+    for text in ("UNLIMITED", "NOT_SET", "INVALID", "", "1:2:3:4", "a-1:00"):
+        assert parse(text) is None
+
+
+def test_linger_flags_and_job_time_left():
+    supervisor = _supervisor_module()
+    args = supervisor.parse(["--state-dir", "x"])
+    assert args.linger == 0 and args.walltime is None and not args.job_id and args.job_end is None
+    assert supervisor.job_time_left(args, 10) == (None, None)
+    with pytest.raises(SystemExit):
+        supervisor.parse(["--state-dir", "x", "--linger", "-1"])
+    with pytest.raises(SystemExit):
+        supervisor.parse(["--state-dir", "x", "--walltime", "0"])
+    args = supervisor.parse(["--state-dir", "x", "--linger", "600", "--walltime", "1000"])
+    assert supervisor.job_time_left(args, 100) == (900, "walltime")
+    args = supervisor.parse(["--state-dir", "x", "--job-end", str(time.time() + 500), "--walltime", "9"])
+    left, source = supervisor.job_time_left(args, 0)
+    assert source == "scheduler end time" and 490 <= left <= 500
+
+
+def test_linger_keeps_clear_of_the_job_end(tmp_path):
+    supervisor = _supervisor_module()
+    args = supervisor.parse(["--state-dir", str(tmp_path), "--linger", "600", "--walltime", "100000", "--grace", "15"])
+    unbounded = supervisor.Supervisor(args)
+    unbounded.begin_linger(0)
+    assert unbounded.linger["seconds"] == 600 and unbounded.linger["capped_by"] is None
+    args = supervisor.parse(["--state-dir", str(tmp_path), "--linger", "600", "--walltime", "400", "--grace", "15"])
+    capped = supervisor.Supervisor(args)
+    end = capped.begin_linger(100)
+    room = 300 - 15 - supervisor.LINGER_MARGIN_SECONDS
+    assert capped.linger["seconds"] == room and capped.linger["capped_by"] == "walltime"
+    assert capped.linger["requested_seconds"] == 600 and capped.linger["job_seconds_left"] == 300
+    assert end - time.monotonic() <= room
+    capped.end_linger("signal")
+    capped.end_linger("elapsed")
+    assert capped.linger["ended"] == "signal" and capped.linger["ended_at"]
+    args = supervisor.parse(["--state-dir", str(tmp_path), "--linger", "600", "--walltime", "50"])
+    assert supervisor.Supervisor(args).begin_linger(40) <= time.monotonic() + 0.5
+
+
+def test_pvserver_lingers_only_after_steps_returned():
+    from jarvis_cd.core.pkg import Application, Service
+
+    from clio_jarvis.pvserver.pkg import Pvserver
+
+    def package(started, linger=600, holding=True):
+        instance = Pvserver.__new__(Pvserver)
+        instance.config = {"linger": linger}
+        instance._clio_holding = holding
+
+        class Pipeline:
+            _started_instances = []
+
+        instance.pipeline = Pipeline()
+        instance.pipeline._started_instances = [instance if item == "self" else item for item in started]
+        return instance
+
+    step = Application.__new__(Application)
+    other_service = Service.__new__(Service)
+    assert package(["self", step])._lingers()
+    assert not package(["self"])._lingers()
+    assert not package(["self", other_service])._lingers()
+    assert not package(["self", step], linger=0)._lingers()
+    assert not package(["self", step], holding=False)._lingers()
+    failing = package(["self", step])
+    try:
+        raise RuntimeError("a step failed")
+    except RuntimeError:
+        assert not failing._lingers()
+
+
+def test_pvserver_linger_arguments(monkeypatch):
+    from clio_jarvis.pvserver.pkg import Pvserver
+
+    instance = Pvserver.__new__(Pvserver)
+    instance.mod_env = {}
+    instance.config = {"linger": 0, "walltime": 3600}
+    assert instance._linger_arguments() == []
+    monkeypatch.delenv("SLURM_JOB_END_TIME", raising=False)
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    instance.config = {"linger": 120, "walltime": 3600}
+    assert instance._linger_arguments() == ["--linger", "120", "--walltime", "3600", "--job-id", "12345"]
+    monkeypatch.delenv("SLURM_JOB_ID")
+    instance.mod_env = {"SLURM_JOB_END_TIME": "1900000000"}
+    instance.config = {"linger": 120, "walltime": None}
+    assert instance._linger_arguments() == ["--linger", "120", "--job-end", "1900000000"]
+
+
+@pytest.mark.skipif(not Path("/proc/net/tcp").exists(), reason="needs Linux /proc/net/tcp")
+@pytest.mark.parametrize("ending", ["elapsed", "signal"])
+def test_supervisor_lingers_on_sigusr1(tmp_path, ending):
+    fake = tmp_path / "fake-pvserver"
+    fake.write_text(
+        textwrap.dedent(
+            f"""\
+            #!{sys.executable}
+            import socket, sys, time
+            port = int(next(a for a in sys.argv if a.startswith("--server-port=")).split("=")[1])
+            s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen(1)
+            print("Waiting for client...", flush=True)
+            time.sleep(600)
+            """
+        )
+    )
+    fake.chmod(0o755)
+    state = tmp_path / "state"
+    linger = 4 if ending == "elapsed" else 600
+    supervisor = subprocess.Popen(
+        [sys.executable, str(REPO_PACKAGES_DIR / "pvserver" / "supervisor.py"), "--state-dir", str(state),
+         "--executable", str(fake), "--grace", "5", "--persist", "--linger", str(linger)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    lines = []
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not (lines and lines[-1].startswith("clio-pvserver ready")):
+        lines.append(supervisor.stdout.readline().strip())
+    ready = json.loads((state / "pvserver-ready.json").read_text())
+    assert ready["linger"] == linger and ready["lingering"] is False
+    began = time.monotonic()
+    supervisor.send_signal(signal.SIGUSR1)
+    while time.monotonic() < deadline and not lines[-1].startswith("clio-pvserver lingering"):
+        lines.append(supervisor.stdout.readline().strip())
+    assert lines[-1].startswith(f"clio-pvserver lingering seconds={linger} until="), lines
+    ready = json.loads((state / "pvserver-ready.json").read_text())
+    assert ready["lingering"] is True and ready["linger_seconds"] == linger and ready["linger_until"]
+    assert supervisor.poll() is None
+    if ending == "signal":
+        supervisor.send_signal(signal.SIGTERM)
+    assert supervisor.wait(timeout=30) == 0
+    took = time.monotonic() - began
+    record = json.loads((state / "pvserver-stop.json").read_text())
+    assert record["linger"]["seconds"] == linger and record["linger"]["ended"] == ending
+    if ending == "elapsed":
+        assert record["reason"] == "linger-ended" and took >= linger - 0.5
+    else:
+        assert record["reason"] == "signal" and took < 20
+
+
 def test_xcompact3d_body_case_plans_the_selftest_cylinder():
     from clio_jarvis.xcompact3d import body
 

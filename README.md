@@ -288,7 +288,8 @@ on) and a note that they are not the cause. They never set a `failed` or
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
 | `hold` | false | A background start (jarvis-cd's default for a service, `start_mode: auto`) always holds, like builtin.paraview's service mode; this setting is for a foreground start. Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
 | `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
-| `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. |
+| `linger` | 600 | Seconds the server stays up after the pipeline's steps (the solver it views) finish, so a client can still attach and look at the final output. 0 means it stops with the steps. No upper cap; it never runs past the job's end. See [Linger after the solver](#linger-after-the-solver). |
+| `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. It also bounds the linger when the scheduler gives no time left. |
 
 `pvserver` binds to 127.0.0.1 only. Reach it over an SSH tunnel. The software
 is Spack's builtin `paraview@5.13.1 +mpi +adios2 +python ~qt` with OSMesa
@@ -309,8 +310,9 @@ under `transport` as information. The start error repeats them as a
 When JARVIS binds a service runtime (`JARVIS_SERVICE_RUNTIME_PATH`), the
 supervisor reports through jarvis-cd's `ServiceRuntimeReporter`: `starting`
 once pvserver is launched, `ready` once rank 0 accepts connections, `degraded`
-then `ready` around a persist restart, `stopping` on SIGTERM or at
-`max_lifetime`, and `stopped` (or `failed`) at the end. The endpoint is the
+then `ready` around a persist restart, `ready` again when it starts to
+linger, `stopping` on SIGTERM, at `max_lifetime` or at the linger's end, and
+`stopped` (or `failed`) at the end. The endpoint is the
 node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
 client opens `cs://<host>:<port>` through an SSH tunnel to that node. The
 record's protocol is `tcp` (`base_url` `tcp://<host>:<port>`, jarvis-cd
@@ -326,6 +328,38 @@ resolves its fill rules (`state_dir`, `run_dir`) when it starts or stops
 unconfigured, and `start` also writes the inputs and `clio-contract.json`.
 The fills depend only on the pipeline's directories, so a `ppl stop` in
 another process finds the server that `ppl start` launched.
+
+#### Linger after the solver
+
+In a pipeline such as pvserver then xcompact3d, jarvis-cd stops pvserver once
+the last step returns (`after_steps`). pvserver then lingers: its `stop`
+sends the supervisor SIGUSR1, and the supervisor keeps serving for `linger`
+seconds, restarting after each client session as `persist` says, then stops
+with reason `linger-ended`. `jarvis ppl run`, `ppl start` and `ppl submit`
+all take this path, so the job ends, and stops being charged, when the
+linger does.
+
+- It lingers only after the steps returned OK, on the instance whose start
+  holds. Cleanup after a failed step stops it at once, so the failure is
+  reported without delay; so does a pipeline with no step.
+- `jarvis ppl stop`, a cancel, the job's end or SIGTERM, SIGINT or SIGHUP to
+  JARVIS stops it at once.
+- It never runs past the job: it ends the stop grace and 60 s before the
+  job's end. The time left comes from the scheduler (Slurm's
+  `SLURM_JOB_END_TIME`, else `squeue` for `SLURM_JOB_ID`), else from
+  `walltime` counted from pvserver's start. A linger it shortens says so.
+- `pvserver-ready.json` carries `linger` from the start, then `lingering:
+  true`, `linger_seconds`, `linger_started_at`, `linger_until` and
+  `linger_capped_by`. The service runtime's `ready` message gives the same
+  end, and the log line is `clio-pvserver lingering seconds=N until=...`.
+- `pvserver-stop.json` carries a `linger` block: `requested_seconds`,
+  `seconds`, `started_at`, `until`, `ended` (`elapsed`, or `signal` when it
+  was stopped sooner), `ended_at`, `capped_by` and the job's time left. The
+  describe document's `service.linger` gives the setting before the run.
+
+Ask for the job's walltime as the solver's padded walltime plus twice the
+linger (20 minutes more at the default). Unused time is not charged when the
+job ends cleanly.
 
 Every package's `walltime` works the same way. There is no default and no
 cap, absent means no limit, and the resolved record then gives no
