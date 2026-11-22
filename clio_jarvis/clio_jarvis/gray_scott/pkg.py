@@ -110,11 +110,13 @@ class GrayScott(ClioApplication):
         shutil.rmtree(self._output(), ignore_errors=True)
         shutil.rmtree(run_dir / "ckpt.bp", ignore_errors=True)
         from clio_jarvis._contract import flushwrap
+        from clio_jarvis._contract.files import revealing
 
         # ADIOS2 does not sync: without a flusher where the ranks write, a viewer
         # on another node sees gs.bp jump by the page cache's writeback interval.
         command = flushwrap.bp5_command(self._output(), [self.clio_executable(), "settings.json"], FLUSH_SECONDS)
-        self._clio_mpi(command, cwd=str(run_dir))
+        with revealing(self._output()):
+            self._clio_mpi(command, cwd=str(run_dir))
 
     def stop(self) -> None:
         """Gray-Scott runs to completion."""

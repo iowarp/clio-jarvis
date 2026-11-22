@@ -301,6 +301,23 @@ def test_xcompact3d_snapshot_check_ignores_a_stale_stat(tmp_path, monkeypatch):
     assert health.has_snapshot(output, wait_seconds=0)
 
 
+def test_revealing_lists_the_parent_until_the_output_shows(tmp_path, monkeypatch):
+    from clio_jarvis._contract import files
+
+    output = tmp_path / "run" / "gs.bp"
+    output.parent.mkdir()
+    listed = []
+    monkeypatch.setattr(files, "_relist_parents", lambda path: listed.append(str(path)))
+    with files.revealing(output, interval=0.05):
+        time.sleep(0.3)
+        output.mkdir()
+        time.sleep(0.3)
+        seen = len(listed)
+        time.sleep(0.3)
+        assert len(listed) == seen
+    assert seen >= 2 and set(listed) == {str(output)}
+
+
 def test_fresh_size_relists_parents_when_a_name_looks_missing(tmp_path, monkeypatch):
     from clio_jarvis._contract import files
 

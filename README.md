@@ -252,8 +252,12 @@ bursts. Each rank therefore starts through `clio_jarvis/_contract/flushwrap.py`
 (standard library only, run with the Python that runs JARVIS): on every node
 that the MPI launch uses, the node-local rank 0 forks a flusher that syncs the
 data files, then `md.0`, `mmd.0` and `md.idx`, every second, and each rank then
-execs the solver. A viewer elsewhere sees each step as it lands, whichever
-nodes `host_slice` gives the solver. The node-local rank comes from the
+execs the solver. The node running JARVIS removed the last run's output
+just before the launch, so its file system client remembers the name as
+missing; while the solver runs, the package lists the output's directory
+every second until that node sees the new output, which clears it for any
+viewer there (say pvserver's rank 0). A viewer elsewhere sees each step as
+it lands, whichever nodes `host_slice` gives the solver. The node-local rank comes from the
 launcher's environment (Open MPI, Hydra, PALS, MVAPICH2 or srun); without one
 every rank flushes. The run's verdict reads `md.idx` through an open
 descriptor, which makes a network file system client fetch fresh attributes,

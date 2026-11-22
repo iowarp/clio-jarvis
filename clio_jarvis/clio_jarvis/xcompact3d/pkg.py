@@ -347,13 +347,15 @@ class Xcompact3d(ClioApplication):
             elif path.exists():
                 path.unlink()
         command = flushed_command(self._output(), [self.clio_executable(), "input.i3d"])
+        from clio_jarvis._contract.files import revealing
         from clio_jarvis.xcompact3d import health
 
         watch = health.SolverWatch(
             self.runtime_line_callback(),
             velocity_limit=health.VELOCITY_LIMIT * max(1.0, abs(float(self.config.get("inflow") or 1.0))),
         )
-        codes = self._clio_mpi(command, cwd=str(run_dir), line_callback=watch, check=False)
+        with revealing(self._output()):
+            codes = self._clio_mpi(command, cwd=str(run_dir), line_callback=watch, check=False)
         try:
             case = json.loads((run_dir / "clio-case.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
