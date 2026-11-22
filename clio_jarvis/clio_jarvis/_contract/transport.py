@@ -99,7 +99,7 @@ class TransportNotes:
             if "use one or more of" in line:
                 for device, kind in OFFERED.findall(line.split("use one or more of", 1)[1]):
                     devices = self.offered.setdefault(kind, [])
-                    if device not in devices:
+                    if device not in devices and len(devices) < self.keep:
                         devices.append(device)
             if len(self.lines) < self.keep and line not in self.lines:
                 self.lines.append(line)
