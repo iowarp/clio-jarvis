@@ -955,3 +955,26 @@ def test_xcompact3d_body_case_plans_the_selftest_cylinder():
     assert "itype = 5" in text and "iibm = 1" in text and "i2dsim = 1" in text
     with pytest.raises(body.CaseError, match="use dt"):
         body.plan_body(stl, dt=0.05, **params)
+
+
+def test_xcompact3d_grid_sizes_follow_the_fft_rule_of_each_boundary():
+    from clio_jarvis.xcompact3d import body
+
+    # Open ends transform n - 1 points, periodic sides n; either must be even and 5-smooth.
+    assert not body.fft_ok(376, 2) and body.fft_ok(385, 2) and body.fft_ok(181, 1)
+    assert body.fft_ok(180, 0) and not body.fft_ok(45, 0) and not body.fft_ok(181, 0)
+    assert body.nice(376, periodic=False) == 385 and body.nice(45, periodic=True) == 48
+    assert body.valid_near(376, 2) == (361, 385)
+    with pytest.raises(body.CaseError, match=r"nx = 376 along a Dirichlet/open direction .* use 361 or 385"):
+        body.check_grid((376, 180, 192), body.BODY_BOUNDARIES)
+    body.check_grid((385, 180, 192), body.BODY_BOUNDARIES)
+
+
+def test_xcompact3d_divergence_within_the_stability_bound_keeps_dt():
+    from clio_jarvis.xcompact3d import health
+
+    case = {"case": "body", "grid": [376, 180, 192], "cfl": 0.084, "diffusion_number": 0.004, "suggested_dt": 0.0015}
+    advice = health.diverged_advice(case, 0.0015, step=1)
+    assert "use 361 or 385" in advice and "not the cause; keep it" in advice and "halve" not in advice
+    above = health.diverged_advice({**case, "grid": [385, 180, 192]}, 0.003, step=40)
+    assert "use that bound" in above and "Raise resolution" not in above

@@ -218,9 +218,12 @@ from the STL: it is scaled to L = 1, turned by `angle`, and voxelised (ray
 parity, pure Python) on the solver grid into `clio-geometry.txt` and
 `clio-geometry.bin`, which the clio geometry patch reads as the immersed
 boundary and writes back as `ep`. The grid spacing is 1 / `resolution`; the
-counts are rounded up to FFT-friendly sizes. Configure refuses a `dt` past CFL
+counts are rounded up to sizes the FFT takes (n along a periodic direction, n - 1
+along the open x direction, even with no prime factor above 5), and configure
+refuses a grid that breaks that rule, naming the nearest valid counts. It also refuses a `dt` past CFL
 0.2 or the viscous limit of the hyperviscous scheme and names the largest safe
-value. The contract summary, which relay shows the agent, carries the setup
+value. A diverged run's `adapt` changes `dt` only when it was above that bound;
+within it, it names the grid, body or Reynolds number instead. The contract summary, which relay shows the agent, carries the setup
 rules so `dt` can be worked out before the job is approved: CFL = U dt / h at
 most 0.2 (aim for 0.1) and dt nu (2 / h^2 + 1 / dz^2) at most 0.0075, with h =
 1 / `resolution`, nu = U / `re`, and dz = 2h for a periodic span of at least 16
