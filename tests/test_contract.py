@@ -282,6 +282,40 @@ def test_xcompact3d_progress_and_artifact_from_stdout(tmp_path):
     assert failed.finalize_progress_for_exit(3)[-1].state.value == "failed"
 
 
+def test_xcompact3d_reports_its_run_result_after_the_verdict(tmp_path):
+    from clio_jarvis._contract.runtime import artifact_adapter
+    from clio_jarvis.xcompact3d import health
+
+    context = _context("xcompact3d", ilast=40, ioutput=20, run_dir=str(tmp_path))
+    artifacts = artifact_adapter(REPO_PACKAGES_DIR / "xcompact3d", context)
+    finals = []
+
+    class Inner:
+        def __call__(self, stream_name, line):
+            artifacts.observe_artifacts(line + "\n")
+
+        def finalize_process(self, return_code):
+            finals.extend(artifacts.finalize_artifacts_for_exit(return_code))
+
+    watch = health.SolverWatch(Inner(), velocity_limit=health.VELOCITY_LIMIT)
+    for line in ("Time step =  20/40, Time unit =   0.1000", "Writing snapshots =>           1",
+                 "Time step =  40/40, Time unit =   0.2000", "Writing snapshots =>           2"):
+        watch(" stdout", line)
+    output = tmp_path / "data.bp5"
+    output.mkdir()
+    (output / "md.idx").write_bytes(b"i" * 200)
+    watch.finalize_process(0)
+    assert finals == []
+    config = {"ilast": 40, "ioutput": 20, "dt": 0.005, "re": 1600}
+    health.verdict(watch, run_dir=tmp_path, output=output, config=config, case={}, return_codes={"0": 0}, launch_env=None)
+    watch.release()
+    by_name = {o.logical_name: o for o in finals}
+    result = by_name["run-result"]
+    assert result.state.value == "finalized" and result.role.value == "validation"
+    assert result.media_type == "application/json" and result.location.value.endswith("clio-run-result.json")
+    assert by_name["snapshots"].state.value == "finalized"
+
+
 def test_xcompact3d_snapshot_check_ignores_a_stale_stat(tmp_path, monkeypatch):
     from clio_jarvis.xcompact3d import health
 

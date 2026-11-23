@@ -86,7 +86,7 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. `cases` holds rules for one case only, such as a parameter that case uses and the others ignore, so it is checked only when the configuration matches the case's `when`. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
 | `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (`param`, `default: physical_cores` and `cores`, the parameter with the target partition's physical cores per node), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. |
-| `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics` and `restart` outputs are reported as artifacts when the run has written them. |
+| `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics`, `restart` and `result` outputs are reported as artifacts when the run has written them. |
 | `progress` | Stdout patterns for steps, completion and readiness. `announces: before-write` means the step line comes before that step is readable. |
 | `service` | Services only: ports, health check, protection, stop signal and stop record, the jarvis-cd service runtime it reports (`runtime`: record, lifecycle, endpoint), maximum lifetime. |
 | `provenance` | Input files hashed into `clio-contract.json`, and the upstream code. |
@@ -244,7 +244,9 @@ snapshot about every 3.2 s, for about 6.4 minutes.
 `clio.decomp2d-fft@2.0.4 io=adios2 +clio` and the site's ADIOS2 when it has
 one. Statistics and restart files are off by default (`icheckpoint` and
 `initstat` 0); when a run writes them they are reported as `statistics` and
-`restart` artifacts beside the `snapshots` view.
+`restart` artifacts beside the `snapshots` view. Every run's verdict,
+`clio-run-result.json`, is reported as the `run-result` artifact (role
+`result`), so it comes back with the run's outputs.
 
 **Live output on a shared file system.** ADIOS2 does not sync, so a node that
 writes `data.bp5` keeps new steps in its page cache and writes them back in
