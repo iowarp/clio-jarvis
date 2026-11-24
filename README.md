@@ -18,6 +18,8 @@ yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
 | `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
 | `clio_jarvis.wrf` | application | WRF ARW 4.6 on a real-data case (real.exe's output, such as NCAR's CONUS 12 km benchmark). Writes one netCDF history file (wrfout_d01_*) per history interval. |
 | `clio_jarvis.warpx` | application | WarpX 24.10, 3D electromagnetic particle-in-cell, running any inputs file as written. Writes one AMReX plotfile of the fields (plotfiles/plt*) per plot interval, each published whole. |
+| `clio_jarvis.lammps` | application | LAMMPS molecular dynamics, running any input script as written. Writes one VTK PolyData frame of the atoms (frames/frame_*.vtp) per dump interval. |
+| `clio_jarvis.gromacs` | application | GROMACS 2024.3 biomolecular dynamics on the person's mdp, structure and topology, with the preparation stages as gmx commands. Writes one VTK PolyData frame of the atoms per frame interval. |
 | `clio_jarvis.pvserver` | service | A ParaView 5.13.1 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
 
 ## Install
@@ -42,6 +44,8 @@ Every package declares its software as a Spack spec in its contract's
 | `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
 | `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../../../spack` (the repository's `spack/`) |
+| `lammps` | `lammps@20240829.1 +mpi` | none (Spack's builtin recipe, so a site's LAMMPS is reused) |
+| `gromacs` | `gromacs@2024.3 +mpi` | none (Spack's builtin recipe, so a site's GROMACS is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -340,6 +344,57 @@ simulated time and seconds per step. The software is `spack/`'s
 fails. It is built without QED (PICSAR's source would be fetched
 during the build); PSATD, openPMD and embedded boundaries are optional
 variants a site's build may lack.
+
+### lammps
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `nprocs`, `ppn` | 8, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
+| `script` | empty | LAMMPS input script on the site, in LAMMPS's own commands, holding the whole case (units, lattice or `read_data`, pair style, fixes and `run`) |
+| `data_files` | empty | Other files the script reads (data files, potentials), copied beside it by name |
+| `steps`, `dump_interval` | 2000, 100 | Steps the script's `run` lines take in all, and steps between frames; `steps` must be a multiple of `dump_interval` |
+| `run_dir` | `{shared_dir}/run` | Frames go to `{run_dir}/frames/frame_*.vtp` |
+
+The run directory gets the script as `in.lammps`, its files, and
+`clio-case.json`. The package runs `clio-run.lammps`, the script with a
+`dump clio` of every atom's id, type, position and velocity inserted
+before the first `run`; configure refuses a script with no `run`, one that
+already names a dump `clio`, and, when its runs are plain numbers, `steps`
+that differ from their sum. A publisher reads each whole dump (every atom
+row present) and writes it as `frames/frame_<step>.vtp`, VTK PolyData with
+one point per atom, and prints `clio-lammps frame I of M`, which the
+progress pattern counts. `clio-run-result.json` has the verdict and LAMMPS's
+own performance lines. The software is Spack's builtin `lammps` recipe, so a
+site's LAMMPS is reused; a script that needs an optional LAMMPS package
+(`manybody`, `molecule`, `kspace` and `rigid` are on by default) names it
+in the spec.
+
+### gromacs
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `nprocs`, `ppn` | 8, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
+| `ntomp` | 1 | OpenMP threads per mdrun rank |
+| `mdp` | empty | The watched run's mdp on the site, in GROMACS's own options |
+| `files` | empty | Everything else the case reads (structure, topology and its .itp, earlier stages' mdp files, an index), copied by name |
+| `prepare` | empty | The stages before the watched run, one gmx command per line (`pdb2gmx`, `editconf`, `solvate`, `grompp`, `genion`, `mdrun`); `<<< words` answers a tool's prompts |
+| `structure`, `topology` | `conf.gro`, `topol.top` | The watched run's grompp `-c` and `-p`, given among `files` or written by a stage |
+| `restraints`, `index`, `maxwarn` | empty, empty, 0 | grompp's `-r`, `-n` and `-maxwarn` |
+| `nsteps`, `frame_interval` | 50000, 500 | Steps of the watched run and steps between frames (`nstxout`); `nsteps` must be a multiple of `frame_interval` |
+| `write_velocities` | true | Also write velocities (`nstvout`), so frames carry speed |
+| `run_dir` | `{shared_dir}/run` | Frames go to `{run_dir}/frames/frame_*.vtp` |
+
+Configure keeps the files as given in `run_dir/case`; each start copies them
+into the run directory again, since `solvate` and `genion` edit the
+topology in place. The stages run in order (mdrun on all the ranks, other
+tools on one), then `grompp` of `md.mdp`, the mdp with `nsteps`, `nstxout`
+and `nstvout` set by the package, and `mdrun -deffnm md`. GROMACS flushes
+md.trr after each frame, so a publisher reads each whole frame and writes
+`frames/frame_<step>.vtp` (atoms as points with element, residue, solvent,
+velocity and speed, the time in ps) and prints `clio-gromacs frame I of M`.
+`clio-run-result.json` has the verdict and mdrun's ns per day. The software
+is Spack's builtin `gromacs` recipe (`gmx_mpi`), so a site's GROMACS is
+reused; force fields come with it.
 
 ### pvserver
 
