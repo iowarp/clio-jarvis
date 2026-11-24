@@ -17,6 +17,7 @@ yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
 | `clio_jarvis.gray_scott` | application | ADIOS2 Gray-Scott reaction-diffusion. Writes U and V to a growing BP5 output. |
 | `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
 | `clio_jarvis.wrf` | application | WRF ARW 4.6 on a real-data case (real.exe's output, such as NCAR's CONUS 12 km benchmark). Writes one netCDF history file (wrfout_d01_*) per history interval. |
+| `clio_jarvis.warpx` | application | WarpX 24.10, 3D electromagnetic particle-in-cell, running any inputs file as written. Writes one AMReX plotfile of the fields (plotfiles/plt*) per plot interval, each published whole. |
 | `clio_jarvis.pvserver` | service | A ParaView 5.13.1 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
 
 ## Install
@@ -40,6 +41,7 @@ Every package declares its software as a Spack spec in its contract's
 | `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
 | `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
+| `warpx` | `warpx@24.10 dims=3 compute=noacc ~qed ~lib ~python` | none (Spack's builtin recipe, so a site's WarpX is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -307,6 +309,33 @@ seconds per step. A public case is NCAR's v4.4 CONUS 12 km benchmark (425 x
 300 x 35, 72 s step, 12 h); the contract summary says which members to
 extract. The software is Spack's builtin `wrf` recipe with no clio patch, so a
 site WRF in Spack is reused with nothing built.
+
+### warpx
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `nprocs`, `ppn` | 8, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
+| `inputs` | empty | WarpX inputs file on the site, in WarpX's own format, holding the whole case (`geometry.dims = 3`, `amr.n_cell`, species, lasers, boundaries) |
+| `max_step`, `plot_interval` | 400, 20 | Steps to run (replacing the inputs' `max_step` and `stop_time`) and steps between plotfiles; `max_step` must be a multiple of `plot_interval` |
+| `fields` | `Ex Ey Ez Bx By Bz jx jy jz rho` | Fields the plotfiles hold |
+| `plot_particles` | false | Also write the species' particles into each plotfile |
+| `run_dir` | `{shared_dir}/run` | Plotfiles go to `{run_dir}/plotfiles/plt*` |
+
+The run directory gets a copy of the inputs as `inputs`, and
+`clio-case.json` with the grid, the level-0 box count (the useful rank
+bound), the species, lasers and the inputs' own diagnostics. The command
+line sets `max_step` and adds a diagnostic `clio` beside the inputs' own;
+configure refuses inputs that are not 3D or already name a diagnostic
+`clio`. WarpX writes a plotfile in place, so the package points `clio` at
+`writing/` and, when WarpX prints `STEP N ends.` (after that step's
+diagnostics are flushed), moves each plotfile up to step N into
+`plotfiles/` and prints `clio-warpx plotfile I of M`, which the progress
+pattern counts. ParaView's `AMReXBoxLibGridReader` follows the series;
+the contract selects the field arrays, which that reader leaves off by
+default. `clio-run-result.json` (`run-result`) has the verdict, steps,
+simulated time and seconds per step. The software is Spack's builtin
+`warpx` recipe without QED (PICSAR's source would be fetched during the
+build).
 
 ### pvserver
 

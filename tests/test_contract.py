@@ -29,7 +29,7 @@ CONFIG = {"shared_dir": "/s", "private_dir": "/p"}
 
 
 def test_packages_are_found():
-    assert {"gray_scott", "pvserver", "wrf", "xcompact3d"} <= set(PACKAGES)
+    assert {"gray_scott", "pvserver", "warpx", "wrf", "xcompact3d"} <= set(PACKAGES)
 
 
 @pytest.mark.parametrize("package", PACKAGES)
