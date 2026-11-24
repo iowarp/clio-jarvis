@@ -319,7 +319,7 @@ site WRF in Spack is reused with nothing built.
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
 | `hold` | false | A background start (jarvis-cd's default for a service, `start_mode: auto`) always holds, like builtin.paraview's service mode; this setting is for a foreground start. Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
 | `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
-| `linger` | 600 | Seconds the server stays up after the pipeline's steps (the solver it views) finish, so a client can still attach and look at the final output. 0 means it stops with the steps. No upper cap; it never runs past the job's end. See [Linger after the solver](#linger-after-the-solver). |
+| `linger` | 180 | Seconds the server stays up after the pipeline's steps (the solver it views) finish, so a following view draws the last steps and a client can still attach and look at the final output. A cancel ends it at once. 0 means it stops with the steps, and a following view loses the steps it had not drawn yet. No upper cap; it never runs past the job's end. See [Linger after the solver](#linger-after-the-solver). |
 | `walltime` | none | Scheduler wall-time limit in seconds. Absent means no limit. When given, it must be positive, with no upper cap. It also bounds the linger when the scheduler gives no time left. |
 
 `pvserver` binds to 127.0.0.1 only. Reach it over an SSH tunnel. The software
@@ -387,9 +387,12 @@ linger does.
   `seconds`, `started_at`, `until`, `ended` (`elapsed`, or `signal` when it
   was stopped sooner), `ended_at`, `capped_by` and the job's time left. The
   describe document's `service.linger` gives the setting before the run.
+- To free the nodes as soon as a following view has drawn the last step,
+  cancel the job then rather than setting `linger` to 0: the linger ends at
+  once, and the view keeps the last picture it drew.
 
 Ask for the job's walltime as the solver's padded walltime plus twice the
-linger (20 minutes more at the default). Unused time is not charged when the
+linger (6 minutes more at the default). Unused time is not charged when the
 job ends cleanly.
 
 Every package's `walltime` works the same way. There is no default and no

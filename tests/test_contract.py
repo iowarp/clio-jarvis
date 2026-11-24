@@ -785,9 +785,9 @@ def test_pvserver_linger_is_a_service_setting_with_a_default():
     contract = load_contract(REPO_PACKAGES_DIR / "pvserver")
     names = {entry["name"] for entry in contract.menu}
     base = {k: v for k, v in contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)}).items() if k in names}
-    assert base["linger"] == 600
+    assert base["linger"] == 180
     contract.check_parameters(base)
-    assert contract.service(base)["linger"] == 600
+    assert contract.service(base)["linger"] == 180
     contract.check_parameters({**base, "linger": 0})
     contract.check_parameters({**base, "linger": 10 * 365 * 86400})
     with pytest.raises(ValueError, match="linger"):
