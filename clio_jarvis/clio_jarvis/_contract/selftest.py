@@ -14,6 +14,7 @@ the execution's progress and artifact records, the package's
 
 from __future__ import annotations
 
+import glob
 import importlib.util
 import json
 import os
@@ -353,7 +354,7 @@ class SelfTest:
                 event is not None and event.get("state") == "finalized",
                 event.get("state") if event else "no artifact event",
             )
-            exists = Path(path).exists()
+            exists = bool(glob.glob(path)) if output["path_kind"] == "glob" else Path(path).exists()
             report.check(f"output {output['name']} exists", exists, path)
             if exists:
                 self._check_with_reader(output, path, int(expected or 0))
