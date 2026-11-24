@@ -41,7 +41,7 @@ Every package declares its software as a Spack spec in its contract's
 | `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
 | `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
-| `warpx` | `warpx@24.10 dims=3 compute=noacc ~qed ~lib ~python` | none (Spack's builtin recipe, so a site's WarpX is reused) |
+| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | none (Spack's builtin recipe, so a site's WarpX is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -335,7 +335,8 @@ the contract selects the field arrays, which that reader leaves off by
 default. `clio-run-result.json` (`run-result`) has the verdict, steps,
 simulated time and seconds per step. The software is Spack's builtin
 `warpx` recipe without QED (PICSAR's source would be fetched during the
-build).
+build); PSATD, openPMD and embedded boundaries are optional variants a
+site's build may lack.
 
 ### pvserver
 

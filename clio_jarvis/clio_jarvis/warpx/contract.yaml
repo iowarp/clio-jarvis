@@ -19,15 +19,19 @@ summary: >-
   plot_interval steps. Each plotfile appears in run_dir/plotfiles only once
   WarpX has written it whole, so ParaView's AMReX reader follows the series
   live; progress counts them. The inputs must not name a diagnostic clio.
-  The build is 3D, MPI, no OpenMP, with PSATD (FFT), openPMD and embedded
-  boundaries, and without QED; a site that already built it in Spack is
-  reused as it is. MPI, the launcher, the nodes and the ranks per node come
-  from the site through JARVIS, never from the inputs.
+  The software is any Spack warpx 24.10 built 3D with MPI and without OpenMP
+  or QED; a site that already has one is reused as it is. The PSATD solver
+  (algo.maxwell_solver = psatd), openPMD diagnostics and embedded boundaries
+  are optional variants (+fft, +openpmd, +eb) a site's build may lack, so the
+  Yee solver, plotfile diagnostics and no embedded boundary run on any build.
+  MPI, the launcher, the nodes and the ranks per node come from the site
+  through JARVIS, never from the inputs.
 install:
   method: spack
   # MPI stays the mpi virtual, so the site's MPI is reused. ~qed: its PICSAR
-  # source would be downloaded inside the build, which compute nodes may not allow.
-  query: warpx@24.10 dims=3 compute=noacc ~qed ~lib ~python
+  # source would be downloaded inside the build, which compute nodes may not
+  # allow. +app is the warpx.3d executable the package runs.
+  query: warpx@24.10 +app +mpi dims=3 compute=noacc ~qed
   repos: []
 
 parameters:
