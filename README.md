@@ -41,7 +41,7 @@ Every package declares its software as a Spack spec in its contract's
 | `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
 | `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
-| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | none (Spack's builtin recipe, so a site's WarpX is reused) |
+| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../../../spack` (the repository's `spack/`) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -73,6 +73,7 @@ entry must hold a `repo.yaml`.
 | `decomp2d-fft@2.0.4` | 2DECOMP&FFT, variants `io=mpi\|adios2` and `fft=generic\|fftw`. With `io=adios2` it fixes the `.bp5` extension of ADIOS2 output. `+clio` (needs `io=adios2`) adds the VTX metadata routines that `xcompact3d +clio` calls. |
 | `xcompact3d@5.0` | Incompact3d v5.0. `+clio` applies the VTX attribute patch (so ParaView's ADIOS2VTXReader opens `data.bp5`) and the geometry patch (the STL immersed boundary) in `patch()`. Without `+clio` the Taylor-Green case still runs. |
 | `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, built against an installed ADIOS2 2.10. `+clio` adds a double `time` and points the `vtk.xml` TIME array at it, so the reader shows model time. |
+| `warpx` | Spack's builtin `warpx`, subclassed. The builtin adds `pip_wheel` to its build targets unconditionally (an assignment inside `with when("+python")`), so `~python` builds fail at install; this recipe builds `pip_wheel` only with `+python`. |
 
 A package's sha256 covers its Spack repositories too, so a recipe change is a
 new package version.
@@ -333,10 +334,12 @@ diagnostics are flushed), moves each plotfile up to step N into
 pattern counts. ParaView's `AMReXBoxLibGridReader` follows the series;
 the contract selects the field arrays, which that reader leaves off by
 default. `clio-run-result.json` (`run-result`) has the verdict, steps,
-simulated time and seconds per step. The software is Spack's builtin
-`warpx` recipe without QED (PICSAR's source would be fetched during the
-build); PSATD, openPMD and embedded boundaries are optional variants a
-site's build may lack.
+simulated time and seconds per step. The software is `spack/`'s
+`clio.warpx`, Spack's builtin `warpx` recipe with one fix: the builtin
+(Spack 0.23) always builds the `pip_wheel` target, so every `~python` build
+fails at install. It is built without QED (PICSAR's source would be fetched
+during the build); PSATD, openPMD and embedded boundaries are optional
+variants a site's build may lack.
 
 ### pvserver
 

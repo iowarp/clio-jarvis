@@ -30,9 +30,10 @@ install:
   method: spack
   # MPI stays the mpi virtual, so the site's MPI is reused. ~qed: its PICSAR
   # source would be downloaded inside the build, which compute nodes may not
-  # allow. +app is the warpx.3d executable the package runs.
+  # allow. +app is the warpx.3d executable the package runs. spack/'s
+  # clio.warpx is the builtin recipe with its ~python build targets fixed.
   query: warpx@24.10 +app +mpi dims=3 compute=noacc ~qed
-  repos: []
+  repos: [spack]
 
 parameters:
   required: [nprocs, inputs, max_step, plot_interval]
