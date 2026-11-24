@@ -16,6 +16,7 @@ yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
 |---|---|---|
 | `clio_jarvis.gray_scott` | application | ADIOS2 Gray-Scott reaction-diffusion. Writes U and V to a growing BP5 output. |
 | `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
+| `clio_jarvis.wrf` | application | WRF ARW 4.6 on a real-data case (real.exe's output, such as NCAR's CONUS 12 km benchmark). Writes one netCDF history file (wrfout_d01_*) per history interval. |
 | `clio_jarvis.pvserver` | service | A ParaView 5.13.1 `pvserver` bound to 127.0.0.1, with a ready record and a stop record. |
 
 ## Install
@@ -38,6 +39,7 @@ Every package declares its software as a Spack spec in its contract's
 |---|---|---|
 | `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
 | `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
+| `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
@@ -281,6 +283,30 @@ the libraries, the device skipped, the transport offered instead, the
 launch's transport settings (`UCX_TLS`, `FI_PROVIDER`, `OMPI_MCA_pml` and so
 on) and a note that they are not the cause. They never set a `failed` or
 `no_output` verdict.
+
+### wrf
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `nprocs`, `ppn` | 40, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
+| `case_dir` | empty | Directory on the site with real.exe's output (`wrfinput_d01`, `wrfbdy_d01`), its `namelist.input` and any physics tables (`*.dat`) the case needs |
+| `run_minutes`, `history_interval` | 180, 60 | Simulated minutes from the case's start, and minutes between history files |
+| `time_step` | empty | Model step in seconds; empty keeps the case's |
+| `nproc_x`, `nproc_y` | -1, -1 | Patch grid; -1 lets WRF choose a near-square split |
+| `run_dir` | `{shared_dir}/run` | History goes to `{run_dir}/wrfout_d01_*` |
+
+The run directory links the install's run tables (`$WRF_HOME/run`), then the
+case's files, and gets a `namelist.input` with the run length, history
+interval, process grid and no restart writes. Configure refuses a run past
+the case's boundary data and a process count that leaves patches under 10
+cells a side, naming the largest count that fits. WRF dmpar logs to
+`rsl.out.*`, not stdout, so the package follows `rsl.out.0000` and prints
+`clio-wrf history N of M` after each history file, which the progress pattern
+counts; `clio-run-result.json` (`run-result`) has the verdict, steps and
+seconds per step. A public case is NCAR's v4.4 CONUS 12 km benchmark (425 x
+300 x 35, 72 s step, 12 h); the contract summary says which members to
+extract. The software is Spack's builtin `wrf` recipe with no clio patch, so a
+site WRF in Spack is reused with nothing built.
 
 ### pvserver
 

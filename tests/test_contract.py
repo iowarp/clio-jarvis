@@ -28,8 +28,8 @@ PACKAGES = [p.name for p in find_packages()]
 CONFIG = {"shared_dir": "/s", "private_dir": "/p"}
 
 
-def test_three_packages_are_found():
-    assert {"gray_scott", "pvserver", "xcompact3d"} <= set(PACKAGES)
+def test_packages_are_found():
+    assert {"gray_scott", "pvserver", "wrf", "xcompact3d"} <= set(PACKAGES)
 
 
 @pytest.mark.parametrize("package", PACKAGES)
