@@ -69,6 +69,31 @@ loads the package, which is the site: relay stages this repository there and
 runs `jarvis repo add`, so no path of the configuring machine is stored. Each
 entry must hold a `repo.yaml`.
 
+#### Other install methods
+
+A contract's `install` part can name any method jarvis-cd installs with:
+`spack`, `pip` (a venv), `conda` (an env, with Miniforge when the site has no
+conda) or `container` (an image, with apptainer or rootless podman). The query
+is then pip requirements, conda specs or an image, and conda takes
+`channels`. `alternatives` lists other ways to install the same software:
+
+```yaml
+install:
+  method: spack
+  query: py-rich@13.7.1
+  repos: []
+  alternatives:
+    - {method: pip, query: "rich==13.7.1"}
+```
+
+With alternatives the menu leaves `install_method` empty and sets
+`install_methods`, so jarvis-cd uses the method this site fits and asks the
+person when several fit. jarvis-cd owns what each method does; relay passes it
+through. MPI codes stay on Spack: pip and conda are refused for a `pencil2d`
+or `block3d` code and for a query that names an MPI (`mpi4py` too), so the
+site's MPI is always the one used. All the packages here are MPI codes or
+ParaView, so they all use Spack.
+
 `spack/` is a Spack repository with namespace `clio`, written for Spack
 0.23.1:
 
@@ -91,7 +116,7 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 
 | Part | Holds |
 |---|---|
-| `install` | The Spack spec (`query`) and the Spack repositories (`repos`, relative to the checkout) the package installs from. They become the menu defaults `install_method: spack`, `install_query` and `install_repos` (rewritten relative to the package directory). An MPI pinned in the query is refused. |
+| `install` | How JARVIS installs the software: `method` (`spack`, `pip`, `conda` or `container`), its `query`, Spack `repos` (relative to the checkout) or conda `channels`, and optional `alternatives`. They become the menu defaults `install_method`, `install_query`, `install_repos` (rewritten relative to the package directory), `install_channels` and `install_methods`. An MPI pinned in a Spack query is refused, and pip or conda for an MPI code. |
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. `cases` holds rules for one case only, such as a parameter that case uses and the others ignore, so it is checked only when the configuration matches the case's `when`. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
 | `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (`param`, `default: physical_cores` and `cores`, the parameter with the target partition's physical cores per node), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. Arithmetic (`div`, `mul`, `add`, `ceil_div`) takes two operands, each a number, a parameter name or more arithmetic, so a frame count with the first frame is `{add: [{div: [nsteps, nstout]}, 1]}`. |

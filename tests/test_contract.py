@@ -1029,3 +1029,83 @@ def test_xcompact3d_divergence_within_the_stability_bound_keeps_dt():
     assert "use 361 or 385" in advice and "not the cause; keep it" in advice and "halve" not in advice
     above = health.diverged_advice({**case, "grid": [385, 180, 192]}, 0.003, step=40)
     assert "use that bound" in above and "Raise resolution" not in above
+
+def _with_install(package: str, tmp_path: Path, install: dict) -> Path:
+    pkg_dir = _copy(package, tmp_path)
+    path = pkg_dir / "contract.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["install"] = install
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return pkg_dir
+
+
+@pytest.mark.parametrize("package", PACKAGES)
+def test_one_install_method_is_the_menu_default(package):
+    contract = load_contract(REPO_PACKAGES_DIR / package)
+    install = contract.install()
+    assert install["install_method"] == contract.data["install"]["method"]
+    assert install["install_query"] == contract.data["install"]["query"]
+    assert "install_methods" not in install
+    assert "alternatives" not in contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
+
+
+def test_alternatives_leave_the_choice_to_jarvis(tmp_path):
+    spack = {"method": "spack", "query": "gray-scott@2.10.2 +clio ^adios2+mpi", "repos": ["spack"]}
+    image = {"method": "container", "query": "ghcr.io/example/gray-scott:2.10.2"}
+    contract = load_contract(_with_install("gray_scott", tmp_path, {**spack, "alternatives": [image]}))
+    install = contract.install()
+    assert install["install_method"] == ""
+    assert [option["method"] for option in install["install_methods"]] == ["spack", "container"]
+    repo = install["install_methods"][0]["repos"][0]
+    assert not os.path.isabs(repo) and (contract.pkg_dir / repo / "repo.yaml").is_file()
+    assert install["install_methods"][1] == image
+    described = contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
+    assert described["method"] == "spack" and described["alternatives"] == [image]
+
+
+def test_conda_and_pip_alternatives_for_a_non_mpi_code(tmp_path):
+    install = {
+        "method": "spack", "query": "paraview@5.13.1 +python ~qt", "repos": [],
+        "alternatives": [
+            {"method": "conda", "query": "paraview=5.13.1", "channels": ["conda-forge"]},
+            {"method": "pip", "query": "rich==13.7.1"},
+        ],
+    }
+    options = load_contract(_with_install("pvserver", tmp_path, install)).install()["install_methods"]
+    assert options[1] == {"method": "conda", "query": "paraview=5.13.1", "channels": ["conda-forge"]}
+    assert options[2] == {"method": "pip", "query": "rich==13.7.1"}
+
+
+@pytest.mark.parametrize("method", ["pip", "conda"])
+def test_package_managers_never_install_an_mpi_code(method, tmp_path):
+    pkg_dir = _with_install("gray_scott", tmp_path, {"method": method, "query": "gray-scott"})
+    with pytest.raises(ContractError, match="site's MPI") as caught:
+        load_contract(pkg_dir)
+    assert caught.value.part == "install"
+
+
+@pytest.mark.parametrize("query", ["mpi4py numpy", "conda-forge::openmpi", "mpich>=4"])
+def test_package_managers_never_name_an_mpi(query, tmp_path):
+    install = {"method": "spack", "query": "paraview@5.13.1", "repos": [],
+               "alternatives": [{"method": "conda", "query": query}]}
+    with pytest.raises(ContractError, match="names the MPI") as caught:
+        load_contract(_with_install("pvserver", tmp_path, install))
+    assert caught.value.part == "install"
+
+
+@pytest.mark.parametrize(
+    "install",
+    [
+        {"method": "spack", "query": "paraview@5.13.1"},
+        {"method": "pip", "query": "rich", "repos": []},
+        {"method": "spack", "query": "paraview@5.13.1", "repos": [], "channels": ["conda-forge"]},
+        {"method": "container", "query": "x:1", "channels": ["conda-forge"]},
+        {"method": "apt", "query": "paraview"},
+        {"method": "spack", "query": "paraview@5.13.1", "repos": [],
+         "alternatives": [{"method": "spack", "query": "paraview@5.12", "repos": []}]},
+    ],
+)
+def test_malformed_install_is_refused(install, tmp_path):
+    with pytest.raises(ContractError) as caught:
+        load_contract(_with_install("pvserver", tmp_path, install))
+    assert caught.value.part == "install"
