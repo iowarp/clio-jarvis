@@ -250,6 +250,15 @@
             }
           }
         },
+        "data_flow": {
+          "type": "object", "additionalProperties": false, "required": ["direction", "kind"],
+          "description": "Which way data moves between this service and the pipeline's other steps, whatever order JARVIS starts them in (it starts a service first). in: the steps that declare outputs write what this service reads; out: this service feeds every other step. Relay declares the matching couplings to JARVIS, so the plan and the job card draw producer to consumer.",
+          "properties": {
+            "direction": { "enum": ["in", "out"] },
+            "kind": { "enum": ["stream", "file", "service", "interceptor", "control", "other"] },
+            "label": { "type": "string" }
+          }
+        },
         "max_lifetime": { "$ref": "#/$defs/value" },
         "linger": {
           "$ref": "#/$defs/value",
