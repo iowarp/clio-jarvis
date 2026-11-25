@@ -778,6 +778,57 @@ def test_supervisor_restarts_after_a_client_session(tmp_path):
     assert counter.read_text() == "2"
 
 
+@pytest.mark.skipif(not Path("/proc/net/tcp").exists(), reason="needs Linux /proc/net/tcp")
+def test_supervisor_restarts_a_crashed_server_within_its_budget(tmp_path):
+    """A pvserver that segfaults starts again on the same port; past the budget a crash ends it."""
+    fake = tmp_path / "fake-pvserver"
+    counter = tmp_path / "launches"
+    fake.write_text(
+        textwrap.dedent(
+            f"""\
+            #!{sys.executable}
+            import os, pathlib, signal, socket, sys, time
+            counter = pathlib.Path({str(counter)!r})
+            n = int(counter.read_text()) + 1 if counter.exists() else 1
+            counter.write_text(str(n))
+            port = int(next(a for a in sys.argv if a.startswith("--server-port=")).split("=")[1])
+            s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port)); s.listen(1)
+            print("Accepting connection(s): 127.0.0.1:%d" % port, flush=True)
+            time.sleep(1)
+            if n == 1:
+                print("vtkPolyData::ComputeCellsBounds", flush=True)
+                os.kill(os.getpid(), signal.SIGSEGV)
+            time.sleep(600)
+            """
+        )
+    )
+    fake.chmod(0o755)
+    state = tmp_path / "state"
+    supervisor = subprocess.Popen(
+        [sys.executable, str(REPO_PACKAGES_DIR / "pvserver" / "supervisor.py"),
+         "--state-dir", str(state), "--executable", str(fake), "--grace", "5", "--crash-restarts", "1"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    lines = []
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not any(l.startswith("clio-pvserver restarted") for l in lines):
+        lines.append(supervisor.stdout.readline().strip())
+    assert "clio-pvserver crashed signal_SIGSEGV restarting crashes=1" in lines, lines
+    ready = yaml.safe_load((state / "pvserver-ready.json").read_text())
+    port = ready["port"]
+    assert ready["crashes"] == 1 and ready["restarts"] == 0 and supervisor.poll() is None
+    assert ready["last_crash"]["signal"] == "SIGSEGV"
+    assert "vtkPolyData::ComputeCellsBounds" in ready["last_crash"]["evidence"]
+    # Launch 2 serves; a second crash is past the budget and ends the service.
+    os.kill(ready["server_pid"], signal.SIGSEGV)
+    assert supervisor.wait(timeout=60) != 0
+    record = yaml.safe_load((state / "pvserver-stop.json").read_text())
+    assert record["reason"] == "server-exited" and record["port"] == port
+    assert [c["signal"] for c in record["crashes"]] == ["SIGSEGV", "SIGSEGV"]
+    assert counter.read_text() == "2"
+
+
 # -- pvserver linger after the solver ---------------------------------------------------
 
 

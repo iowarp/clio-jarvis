@@ -405,6 +405,7 @@ reused; force fields come with it.
 | `dataset` | empty | Absolute path, on the site, of the dataset clients open (e.g. xcompact3d's `data.bp5`), named in the service runtime's dataset descriptor; empty means `state_dir` |
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
+| `crash_restarts` | 3 | Times a pvserver that crashes (a nonzero exit or a signal, such as a segfault in a filter) starts again on the same port, so a client can rejoin and rebuild its scene. The supervisor kills what is left of the crashed process group and waits for the port to close first. The ready record counts `crashes` with `last_crash` (its exit and last output lines); the stop record lists every crash. 0 means a crash ends the service. |
 | `hold` | false | A background start (jarvis-cd's default for a service, `start_mode: auto`) always holds, like builtin.paraview's service mode; this setting is for a foreground start. Off: `start` returns once the server is ready, and a later `stop` (from another `jarvis` process too) stops it. This is how a service runner serves it: `jarvis ppl start`, wait, then `jarvis ppl stop` on TERM, INT or HUP. On: `start` returns only when the server stops, for a hand-run `jarvis ppl run` that should serve until JARVIS gets SIGTERM, SIGINT or SIGHUP, which it passes on. Without hold, `ppl run` starts the server and stops it at once. |
 | `max_lifetime` | none | Seconds before the server stops itself. Absent means it runs until it is stopped. When given, it must be positive, with no upper cap. |
 | `linger` | 180 | Seconds the server stays up after the pipeline's steps (the solver it views) finish, so a following view draws the last steps and a client can still attach and look at the final output. A cancel ends it at once. 0 means it stops with the steps, and a following view loses the steps it had not drawn yet. No upper cap; it never runs past the job's end. See [Linger after the solver](#linger-after-the-solver). |
@@ -429,7 +430,7 @@ under `transport` as information. The start error repeats them as a
 When JARVIS binds a service runtime (`JARVIS_SERVICE_RUNTIME_PATH`), the
 supervisor reports through jarvis-cd's `ServiceRuntimeReporter`: `starting`
 once pvserver is launched, `ready` once rank 0 accepts connections, `degraded`
-then `ready` around a persist restart, `ready` again when it starts to
+then `ready` around a persist restart or a crash restart, `ready` again when it starts to
 linger, `stopping` on SIGTERM, at `max_lifetime` or at the linger's end, and
 `stopped` (or `failed`) at the end. The endpoint is the
 node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
