@@ -1,5 +1,6 @@
 schema: clio.package-contract.v1
 package: pvserver
+title: ParaView server
 version: 0.3.12
 kind: service
 summary: >-

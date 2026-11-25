@@ -116,6 +116,7 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 
 | Part | Holds |
 |---|---|
+| `title` | Optional: the software's name as a person knows it (`LAMMPS`, `GROMACS`), which relay's questions and job cards show instead of the package name. |
 | `install` | How JARVIS installs the software: `method` (`spack`, `pip`, `conda` or `container`), its `query`, Spack `repos` (relative to the checkout) or conda `channels`, and optional `alternatives`. They become the menu defaults `install_method`, `install_query`, `install_repos` (rewritten relative to the package directory), `install_channels` and `install_methods`. An MPI pinned in a Spack query is refused, and pip or conda for an MPI code. |
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. `cases` holds rules for one case only, such as a parameter that case uses and the others ignore, so it is checked only when the configuration matches the case's `when`. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |

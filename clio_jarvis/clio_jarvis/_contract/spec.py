@@ -614,6 +614,7 @@ class Contract:
             "version": self.version,
             "sha256": self.sha256,
             "kind": self.kind,
+            "title": self.data.get("title") or self.pkg_type,
             "summary": self.data["summary"],
             "install": self._described_install(),
             "parameters": self.parameters_schema(),
