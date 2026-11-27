@@ -113,7 +113,7 @@ class Pvserver(ClioService):
             },
             {
                 "name": "dataset",
-                "msg": "Absolute path of the dataset clients open through this server (e.g. xcompact3d's data.bp5), named in the service runtime; empty means the state directory",
+                "msg": "Absolute path of the dataset clients open through this server (e.g. gray_scott's gs.bp), named in the service runtime; empty means the state directory",
                 "type": str,
                 "default": "",
             },

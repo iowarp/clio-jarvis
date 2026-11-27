@@ -30,7 +30,7 @@ CONFIG = {"shared_dir": "/s", "private_dir": "/p"}
 
 
 def test_packages_are_found():
-    assert {"gray_scott", "gromacs", "lammps", "pvserver", "warpx", "wrf", "xcompact3d"} <= set(PACKAGES)
+    assert {"gray_scott", "gromacs", "lammps", "pvserver", "warpx", "wrf"} <= set(PACKAGES)
 
 
 @pytest.mark.parametrize("package", PACKAGES)
@@ -190,19 +190,18 @@ def test_missing_provider_is_refused(tmp_path):
 
 
 def test_unknown_parameter_in_output_path_is_refused(tmp_path):
-    pkg_dir = _copy("xcompact3d", tmp_path)
+    pkg_dir = _copy("gray_scott", tmp_path)
     path = pkg_dir / "contract.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data["outputs"][0]["path"] = "{nowhere}/data.bp5"
+    data["outputs"][0]["path"] = "{nowhere}/gs.bp"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     with pytest.raises(ContractError) as caught:
         load_contract(pkg_dir)
     assert caught.value.part == "outputs"
 
 
-@pytest.mark.parametrize("package", ["gray_scott", "xcompact3d"])
-def test_view_descriptor_has_the_fields_the_paraview_view_reads(package):
-    contract = load_contract(REPO_PACKAGES_DIR / package)
+def test_view_descriptor_has_the_fields_the_paraview_view_reads():
+    contract = load_contract(REPO_PACKAGES_DIR / "gray_scott")
     config = contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})
     views = [output for output in contract.data["outputs"] if is_view(output)]
     assert len(views) == 1
@@ -218,25 +217,9 @@ def test_view_descriptor_has_the_fields_the_paraview_view_reads(package):
         assert view["path"].startswith("/s/run/")
 
 
-def test_xcompact3d_view_names_the_body_surface_only_for_a_body_case():
-    contract = load_contract(REPO_PACKAGES_DIR / "xcompact3d")
-    base = {**CONFIG, "pkg_dir": str(contract.pkg_dir)}
-    output = contract.data["outputs"][0]
-    body = contract.view_descriptor(output, contract.resolve_config({"geometry": "/data/wing.stl"}, base), growing=True)
-    validate_view_descriptor(body)
-    assert body["geometry"] == [{"path": "/s/run/body.stl", "label": "body"}]
-    tgv = contract.view_descriptor(output, contract.resolve_config({"geometry": ""}, base), growing=True)
-    assert "geometry" not in tgv
-    with pytest.raises(ValueError, match="geometry"):
-        validate_view_descriptor({**body, "geometry": [{"path": "run/body.stl"}]})
-
-
 def test_headline_defaults():
     gs = load_contract(REPO_PACKAGES_DIR / "gray_scott").defaults()
     assert gs["steps"] // gs["plotgap"] == 100
-    x3 = load_contract(REPO_PACKAGES_DIR / "xcompact3d").defaults()
-    assert x3["ilast"] // x3["ioutput"] == 120
-    assert x3["ilast"] * x3["dt"] == pytest.approx(12.0)
 
 
 def test_bad_parameter_is_refused():
@@ -273,84 +256,6 @@ def test_gray_scott_progress_from_stdout():
     final = adapter.finalize_progress_for_exit(0)
     assert final[-1].state.value == "completed"
     assert final[-1].metadata["clio"]["view"]["growing"] is False
-
-
-def test_xcompact3d_progress_and_artifact_from_stdout(tmp_path):
-    from clio_jarvis._contract.runtime import artifact_adapter, progress_adapter
-
-    context = _context("xcompact3d", ilast=40, ioutput=20, run_dir=str(tmp_path))
-    progress = progress_adapter(REPO_PACKAGES_DIR / "xcompact3d", context)
-    artifacts = artifact_adapter(REPO_PACKAGES_DIR / "xcompact3d", context)
-    text = (
-        " clio: vtk.xml attribute defined (587 bytes)\n"
-        "Writing snapshots =>           1\n"
-        "Time for writing snapshots (s):   0.1\n"
-        "Writing snapshots =>           2\n"
-    )
-    steps = progress.observe_progress(text)
-    assert [o.metadata["clio"]["step"] for o in steps] == [1, 2]
-    states = [o.state.value for o in artifacts.observe_artifacts(text)]
-    assert states == ["producing", "available"]
-    (tmp_path / "data.bp5").mkdir()
-    (tmp_path / "data.bp5" / "md.idx").write_bytes(b"x" * 10)
-    final = artifacts.finalize_artifacts_for_exit(0)
-    assert final[-1].state.value == "finalized" and final[-1].size_bytes == 10
-    failed = progress_adapter(REPO_PACKAGES_DIR / "xcompact3d", context)
-    failed.observe_progress(text)
-    assert failed.finalize_progress_for_exit(3)[-1].state.value == "failed"
-
-
-def test_xcompact3d_reports_its_run_result_after_the_verdict(tmp_path):
-    from clio_jarvis._contract.runtime import artifact_adapter
-    from clio_jarvis.xcompact3d import health
-
-    context = _context("xcompact3d", ilast=40, ioutput=20, run_dir=str(tmp_path))
-    artifacts = artifact_adapter(REPO_PACKAGES_DIR / "xcompact3d", context)
-    finals = []
-
-    class Inner:
-        def __call__(self, stream_name, line):
-            artifacts.observe_artifacts(line + "\n")
-
-        def finalize_process(self, return_code):
-            finals.extend(artifacts.finalize_artifacts_for_exit(return_code))
-
-    watch = health.SolverWatch(Inner(), velocity_limit=health.VELOCITY_LIMIT)
-    for line in ("Time step =  20/40, Time unit =   0.1000", "Writing snapshots =>           1",
-                 "Time step =  40/40, Time unit =   0.2000", "Writing snapshots =>           2"):
-        watch(" stdout", line)
-    output = tmp_path / "data.bp5"
-    output.mkdir()
-    (output / "md.idx").write_bytes(b"i" * 200)
-    watch.finalize_process(0)
-    assert finals == []
-    config = {"ilast": 40, "ioutput": 20, "dt": 0.005, "re": 1600}
-    health.verdict(watch, run_dir=tmp_path, output=output, config=config, case={}, return_codes={"0": 0}, launch_env=None)
-    watch.release()
-    by_name = {o.logical_name: o for o in finals}
-    result = by_name["run-result"]
-    assert result.state.value == "finalized" and result.role.value == "validation"
-    assert result.media_type == "application/json" and result.location.value.endswith("clio-run-result.json")
-    assert by_name["snapshots"].state.value == "finalized"
-
-
-def test_xcompact3d_snapshot_check_ignores_a_stale_stat(tmp_path, monkeypatch):
-    from clio_jarvis.xcompact3d import health
-
-    output = tmp_path / "data.bp5"
-    output.mkdir()
-    (output / "md.idx").write_bytes(b"x" * 547)
-    real_stat = Path.stat
-
-    def stale(self, *args, **kwargs):
-        result = real_stat(self, *args, **kwargs)
-        if self.name != "md.idx":
-            return result
-        # What another node's cached attributes gave: the 64-byte header only.
-        return os.stat_result((result.st_mode, result.st_ino, result.st_dev, result.st_nlink, result.st_uid, result.st_gid, 64, 0, 0, 0))
-
-    monkeypatch.setattr(Path, "stat", stale)
-    assert health.has_snapshot(output, wait_seconds=0)
 
 
 def test_revealing_lists_the_parent_until_the_output_shows(tmp_path, monkeypatch):
@@ -413,85 +318,6 @@ def test_transport_warnings_are_told_from_errors():
     assert transport.library("[comp-05:4242:0] ucp_ep.c:1500 UCX  ERROR  failed to connect: Connection refused") is None
     assert transport.library("Time step =  20/900, Time unit =   0.2000") is None
     assert transport.TransportNotes().report() is None
-
-
-def _xcompact3d_verdict(tmp_path, lines, *, index_bytes, codes=None, env=None):
-    from clio_jarvis.xcompact3d import health
-
-    watch = health.SolverWatch(None, velocity_limit=health.VELOCITY_LIMIT)
-    for line in lines:
-        watch(" stdout", line)
-    output = tmp_path / "data.bp5"
-    output.mkdir()
-    (output / "md.idx").write_bytes(b"i" * index_bytes)
-    config = {"ilast": 40, "ioutput": 20, "dt": 0.005, "re": 1600}
-    return health.verdict(watch, run_dir=tmp_path, output=output, config=config, case={}, return_codes=codes or {"0": 0}, launch_env=env)
-
-
-def test_xcompact3d_reports_a_transport_fallback_as_information(tmp_path):
-    steps = [UCX_SKIP, UCX_SKIP.replace("comp-05", "comp-06"), "Time step =  20/40, Time unit =   0.1000", "Writing snapshots =>  1",
-             "Time step =  40/40, Time unit =   0.2000", "Writing snapshots =>  2"]
-    result = _xcompact3d_verdict(tmp_path, steps, index_bytes=200, env={"UCX_TLS": "tcp,self,sm", "PATH": "/usr/bin"})
-    assert result["status"] == "ok" and result["cause"] is None
-    transport = result["transport"]
-    assert transport["fallback"] and transport["libraries"] == ["ucx"]
-    assert transport["unavailable"] == ["mlx5_0:1"] and transport["offered"] == {"tcp": ["eno1", "lo"]}
-    assert transport["used"].startswith("tcp") and transport["warning_lines"] == 2
-    assert transport["launch_settings"] == {"UCX_TLS": "tcp,self,sm"}
-    assert not any("UCX" in line for line in result["last_lines"])
-
-
-def test_xcompact3d_never_blames_a_transport_fallback(tmp_path):
-    from clio_jarvis.xcompact3d import health
-
-    empty = _xcompact3d_verdict(tmp_path, [UCX_SKIP, "Time step =  40/40, Time unit =   0.2000"], index_bytes=64)
-    assert empty["status"] == "no_output" and empty["cause"] == "no_output"
-    assert empty["transport"]["note"] and "not the cause" in empty["adapt"]
-    assert "info, not the cause" in health.describe(empty, tmp_path)
-    assert not any("UCX" in line for line in empty["last_lines"])
-
-    early = tmp_path / "early"
-    early.mkdir()
-    failed = _xcompact3d_verdict(early, [UCX_SKIP, "error while loading shared libraries: libfftw3.so.3"], index_bytes=64, codes={"0": 127})
-    assert failed["cause"] == "launch_failed"
-    assert failed["last_lines"] == ["error while loading shared libraries: libfftw3.so.3"]
-    assert "does not explain" in failed["transport"]["note"]
-
-
-def test_xcompact3d_snapshot_check_waits_for_a_late_index(tmp_path):
-    import threading
-
-    from clio_jarvis.xcompact3d import health
-
-    output = tmp_path / "data.bp5"
-    output.mkdir()
-    index = output / "md.idx"
-    index.write_bytes(b"h" * 64)
-    assert not health.has_snapshot(output, wait_seconds=0)
-    assert not health.has_snapshot(tmp_path / "missing.bp5", wait_seconds=0.2)
-    late = threading.Timer(0.3, lambda: index.write_bytes(b"h" * 64 + b"s" * 64))
-    late.start()
-    try:
-        started = time.monotonic()
-        assert health.has_snapshot(output, wait_seconds=5)
-        assert time.monotonic() - started < 4
-    finally:
-        late.cancel()
-
-
-def test_xcompact3d_ranks_start_through_the_node_flusher(tmp_path):
-    import shlex
-
-    from clio_jarvis._contract import flushwrap
-    from clio_jarvis.xcompact3d.pkg import FLUSH_SECONDS, flushed_command
-
-    words = shlex.split(flushed_command(tmp_path / "data.bp5", ["/opt/x 3d/xcompact3d", "input.i3d"]))
-    assert words[:2] == [sys.executable, os.path.abspath(flushwrap.__file__)]
-    assert words[-3:] == ["--", "/opt/x 3d/xcompact3d", "input.i3d"]
-    args = flushwrap.parse(words[2:])
-    assert args.output == str(tmp_path / "data.bp5") and args.every == FLUSH_SECONDS
-    assert args.first == ["data.*"] and args.last == ["md.0", "mmd.0", "md.idx"]
-    assert args.program == ["/opt/x 3d/xcompact3d", "input.i3d"]
 
 
 def test_gray_scott_ranks_start_through_the_node_flusher(tmp_path):
@@ -699,19 +525,6 @@ def test_pvserver_launch_file_is_jarvis_launch_record():
 
 
 # -- package helpers --------------------------------------------------------------------
-
-
-def test_xcompact3d_input_rewrite_keeps_comments():
-    from clio_jarvis.xcompact3d.pkg import i3d_value, set_i3d, vtk_xml
-
-    template = (REPO_PACKAGES_DIR / "xcompact3d" / "config" / "input_DNS_Re1600.i3d").read_text(encoding="utf-8")
-    text = set_i3d(template, "ilast", 2400)
-    text = set_i3d(text, "nx", 129)
-    text = set_i3d(text, "dt", 0.005)
-    assert "ilast = 2400          ! Last iteration" in text
-    assert i3d_value(text, "nx") == "129" and i3d_value(text, "ny") == "65"
-    xml = vtk_xml((65, 65, 65), (0.05, 0.05, 0.05), ("ux", "vort"))
-    assert 'WholeExtent="0 64 0 64 0 64"' in xml and '<DataArray Name="TIME">time</DataArray>' in xml
 
 
 @pytest.mark.skipif(not Path("/proc/net/tcp").exists(), reason="needs Linux /proc/net/tcp")
@@ -1009,44 +822,6 @@ def test_supervisor_lingers_on_sigusr1(tmp_path, ending):
     else:
         assert record["reason"] == "signal" and took < 20
 
-
-def test_xcompact3d_body_case_plans_the_selftest_cylinder():
-    from clio_jarvis.xcompact3d import body
-
-    stl = REPO_PACKAGES_DIR / "xcompact3d" / "config" / "cylinder.stl"
-    params = dict(resolution=12, angle=0.0, reference_length=0.0, span="auto", upstream=3.0,
-                  downstream=10.0, lateral=3.0, nprocs=4, inflow=1.0, re=300.0)
-    case = body.plan_body(stl, dt=0.005, **params)
-    assert case.span == "periodic" and case.grid == (181, 90, 8) and case.decomposition == (2, 2)
-    # A disc of diameter 12 points on each of the 8 planes: close to pi 6^2.
-    assert 100 * 8 < case.mask.solid < 125 * 8
-    text = body.input_i3d(case, inflow=1.0, re=300.0, dt=0.005, ilast=200, ioutput=20)
-    assert "itype = 5" in text and "iibm = 1" in text and "i2dsim = 1" in text
-    with pytest.raises(body.CaseError, match="use dt"):
-        body.plan_body(stl, dt=0.05, **params)
-
-
-def test_xcompact3d_grid_sizes_follow_the_fft_rule_of_each_boundary():
-    from clio_jarvis.xcompact3d import body
-
-    # Open ends transform n - 1 points, periodic sides n; either must be even and 5-smooth.
-    assert not body.fft_ok(376, 2) and body.fft_ok(385, 2) and body.fft_ok(181, 1)
-    assert body.fft_ok(180, 0) and not body.fft_ok(45, 0) and not body.fft_ok(181, 0)
-    assert body.nice(376, periodic=False) == 385 and body.nice(45, periodic=True) == 48
-    assert body.valid_near(376, 2) == (361, 385)
-    with pytest.raises(body.CaseError, match=r"nx = 376 along a Dirichlet/open direction .* use 361 or 385"):
-        body.check_grid((376, 180, 192), body.BODY_BOUNDARIES)
-    body.check_grid((385, 180, 192), body.BODY_BOUNDARIES)
-
-
-def test_xcompact3d_divergence_within_the_stability_bound_keeps_dt():
-    from clio_jarvis.xcompact3d import health
-
-    case = {"case": "body", "grid": [376, 180, 192], "cfl": 0.084, "diffusion_number": 0.004, "suggested_dt": 0.0015}
-    advice = health.diverged_advice(case, 0.0015, step=1)
-    assert "use 361 or 385" in advice and "not the cause; keep it" in advice and "halve" not in advice
-    above = health.diverged_advice({**case, "grid": [385, 180, 192]}, 0.003, step=40)
-    assert "use that bound" in above and "Raise resolution" not in above
 
 def _with_install(package: str, tmp_path: Path, install: dict) -> Path:
     pkg_dir = _copy(package, tmp_path)

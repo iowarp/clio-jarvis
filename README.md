@@ -15,7 +15,6 @@ yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
 | Package | Kind | What it does |
 |---|---|---|
 | `clio_jarvis.gray_scott` | application | ADIOS2 Gray-Scott reaction-diffusion. Writes U and V to a growing BP5 output. |
-| `clio_jarvis.xcompact3d` | application | Xcompact3d flow past any STL body (immersed boundary), or the Taylor-Green vortex at Re 1600 without one. Writes ux, uy, uz, pp, vort, critq (and ep, the body) to a growing BP5 output. |
 | `clio_jarvis.wrf` | application | WRF ARW 4.6 on a real-data case (real.exe's output, such as NCAR's CONUS 12 km benchmark). Writes one netCDF history file (wrfout_d01_*) per history interval. |
 | `clio_jarvis.warpx` | application | WarpX 24.10, 3D electromagnetic particle-in-cell, running any inputs file as written. Writes one AMReX plotfile of the fields (plotfiles/plt*) per plot interval, each published whole. |
 | `clio_jarvis.lammps` | application | LAMMPS molecular dynamics, running any input script as written. Writes one VTK PolyData frame of the atoms (frames/frame_*.vtp) per dump interval. |
@@ -41,7 +40,6 @@ Every package declares its software as a Spack spec in its contract's
 | Package | `install_query` | `install_repos` |
 |---|---|---|
 | `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
-| `xcompact3d` | `xcompact3d@5.0 +clio ^decomp2d-fft io=adios2 ^adios2+mpi+fortran` | `../../../spack` (the repository's `spack/`) |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
 | `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../../../spack` (the repository's `spack/`) |
 | `lammps` | `lammps@20240829.1 +mpi` | none (Spack's builtin recipe, so a site's LAMMPS is reused) |
@@ -99,8 +97,6 @@ ParaView, so they all use Spack.
 
 | Recipe | What it adds |
 |---|---|
-| `decomp2d-fft@2.0.4` | 2DECOMP&FFT, variants `io=mpi\|adios2` and `fft=generic\|fftw`. With `io=adios2` it fixes the `.bp5` extension of ADIOS2 output. `+clio` (needs `io=adios2`) adds the VTX metadata routines that `xcompact3d +clio` calls. |
-| `xcompact3d@5.0` | Incompact3d v5.0. `+clio` applies the VTX attribute patch (so ParaView's ADIOS2VTXReader opens `data.bp5`) and the geometry patch (the STL immersed boundary) in `patch()`. Without `+clio` the Taylor-Green case still runs. |
 | `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, built against an installed ADIOS2 2.10. `+clio` adds a double `time` and points the `vtk.xml` TIME array at it, so the reader shows model time. |
 | `warpx` | Spack's builtin `warpx`, subclassed. The builtin always builds the `pip_wheel` target (an assignment inside `with when("+python")`) and always runs its `pip_install_nodeps` phase, so `~python` builds fail; this recipe does both only with `+python`. |
 
@@ -142,17 +138,16 @@ output:
 ```json
 {
   "schema": "clio.view-descriptor.v1",
-  "name": "snapshots",
-  "path": "<shared_dir>/run/data.bp5",
+  "name": "fields",
+  "path": "<shared_dir>/run/gs.bp",
   "path_kind": "directory",
   "format": "adios2-bp5",
   "reader": "ADIOS2VTXReader",
   "reader_properties": {},
   "growing": true,
-  "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 120},
-  "display": {"array": "vort", "association": "POINTS", "representation": "Slice"},
-  "geometry": [{"path": "<shared_dir>/run/body.stl", "label": "body"}],
-  "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.3.0", "sha256": "..."}
+  "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 100},
+  "display": {"array": "V", "association": "CELLS", "representation": "Slice"},
+  "producer": {"package": "clio_jarvis.gray_scott", "version": "0.2.4", "sha256": "..."}
 }
 ```
 
@@ -160,8 +155,7 @@ output:
 and `visible`, default true) that a viewer opens beside the data, in the data's own
 coordinates. A contract declares them per output as `geometry: [{path, label,
 visible, when}]`. `path` is a template like the output path. `when` maps parameters
-to JSON schemas, and the entry is reported only when every one matches. Xcompact3d
-reports `{run_dir}/body.stl` (label `body`) for a body case and nothing for TGV.
+to JSON schemas, and the entry is reported only when every one matches.
 
 While the run goes, each progress event carries metadata `clio`
 (`clio.step.v1`) with `step`, `visible_steps`, `expected_steps` and the view
@@ -232,70 +226,10 @@ cores only when every rank runs here, and otherwise leaves placement to
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/gs.bp` |
 
 On 4 Ares ranks the defaults write an output step about every 2.7 s, for
-about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe. Each
-rank starts through the same flusher as xcompact3d (see **Live output on a
-shared file system** below), syncing `gs.bp` every second on every node with
-solver ranks, so a viewer on another node follows it step by step.
-
-### xcompact3d
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `nprocs`, `ppn` | 4, empty | MPI ranks and ranks per node; see [Ranks per node](#ranks-per-node) |
-| `geometry` | empty | STL file of the body (binary or ASCII, closed, any units). Relative paths are from the directory jarvis runs in; `{pkg_dir}` names the package. Empty means the Taylor-Green case |
-| `inflow` | 1.0 | Inflow speed U along +x |
-| `angle` | 0 | Angle of attack in degrees, nose up (a turn about z) |
-| `resolution` | 24 | Grid points per body length L |
-| `reference_length` | 0 | L in STL units; 0 means the STL's x extent |
-| `span` | auto | `periodic` (a section extruded along z, run as a thin periodic slab), `free` (a whole 3D body) or `auto` |
-| `upstream`, `downstream`, `lateral` | 3, 10, 3 | Domain margins in body lengths |
-| `n` | 65 | Grid points per side, Taylor-Green case only (33, 65, 129 or 257) |
-| `ilast`, `ioutput`, `dt` | 2400, 20, 0.005 | Iterations, iterations per snapshot, time step |
-| `icheckpoint` | 0 | Iterations between restart files (`checkpoint.bp5`, the `restart` output) and statistics writes; 0 means none |
-| `initstat` | 0 | Iteration from which statistics are averaged into `statistics.bp5` (the `statistics` output); 0 means none |
-| `re` | 1600 | Reynolds number; U L / nu in the body case |
-| `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/data.bp5` |
-
-**Body case.** Incompact3d's cylinder wake case (`itype = 5`) with the body
-from the STL: it is scaled to L = 1, turned by `angle`, and voxelised (ray
-parity, pure Python) on the solver grid into `clio-geometry.txt` and
-`clio-geometry.bin`, which the clio geometry patch reads as the immersed
-boundary and writes back as `ep`. The grid spacing is 1 / `resolution`; the
-counts are rounded up to sizes the FFT takes (n along a periodic direction, n - 1
-along the open x direction, even with no prime factor above 5), and configure
-refuses a grid that breaks that rule, naming the nearest valid counts. It also refuses a `dt` past CFL
-0.2 or the viscous limit of the hyperviscous scheme and names the largest safe
-value. A diverged run's `adapt` changes `dt` only when it was above that bound;
-within it, it names the grid, body or Reynolds number instead. The contract summary, which relay shows the agent, carries the setup
-rules so `dt` can be worked out before the job is approved: CFL = U dt / h at
-most 0.2 (aim for 0.1) and dt nu (2 / h^2 + 1 / dz^2) at most 0.0075, with h =
-1 / `resolution`, nu = U / `re`, and dz = 2h for a periodic span of at least 16
-/ `resolution` (finer for a shorter one, since the span gets at least 8 points)
-or h for a free one. It also covers run length, snapshot count and a walltime estimate of about
-nx ny nz `ilast` / (throughput `nprocs`) seconds, with the site's throughput
-per rank measured from a short run; the contract's `sizing` part gives the
-mesh, pencil-grid and node rules. `clio-case.json` records the grid, body placement, solid points and
-stability numbers, `body.stl` is the body in solver coordinates, and
-`forces.dat` gets time, drag and lift from a control volume round the body. A
-NACA 4412 section at 20 degrees, Re 1000 and resolution 24 (361 x 160 x 8)
-sheds a vortex street; 7500 steps at dt 0.004 take about 6 minutes on 20 Ares
-ranks.
-
-**Taylor-Green case.** The vortex DNS at Re 1600 from the Incompact3d examples
-(`config/input_DNS_Re1600.i3d`, BSD-3, see `NOTICE`). Its vortex sheets roll up
-and break into turbulence by about t = 9. On 4 Ares ranks the defaults write a
-snapshot about every 3.2 s, for about 6.4 minutes.
-
-**Software.** The `clio.xcompact3d@5.0 +clio` recipe, over
-`clio.decomp2d-fft@2.0.4 io=adios2 +clio` and the site's ADIOS2 when it has
-one. Statistics and restart files are off by default (`icheckpoint` and
-`initstat` 0); when a run writes them they are reported as `statistics` and
-`restart` artifacts beside the `snapshots` view. Every run's verdict,
-`clio-run-result.json`, is reported as the `run-result` artifact (role
-`result`), so it comes back with the run's outputs.
+about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe.
 
 **Live output on a shared file system.** ADIOS2 does not sync, so a node that
-writes `data.bp5` keeps new steps in its page cache and writes them back in
+writes `gs.bp` keeps new steps in its page cache and writes them back in
 bursts. Each rank therefore starts through `clio_jarvis/_contract/flushwrap.py`
 (standard library only, run with the Python that runs JARVIS): on every node
 that the MPI launch uses, the node-local rank 0 forks a flusher that syncs the
@@ -307,23 +241,7 @@ every second until that node sees the new output, which clears it for any
 viewer there (say pvserver's rank 0). A viewer elsewhere sees each step as
 it lands, whichever nodes `host_slice` gives the solver. The node-local rank comes from the
 launcher's environment (Open MPI, Hydra, PALS, MVAPICH2 or srun); without one
-every rank flushes. The run's verdict reads `md.idx` through an open
-descriptor, which makes a network file system client fetch fresh attributes,
-lists the directories above it if the name looks missing (the client also
-caches "no such file" from a look before the solver created it), and, when
-the solver announced snapshots, keeps reading it for up to 10 s, so
-a run written from another node is not judged `no_output` from a stale size.
-
-**Network fallback warnings.** UCX and libfabric print a warning when a fast
-device such as `mlx5_0:1` is missing or down, then carry on over another
-transport, often TCP. `clio_jarvis/_contract/transport.py` picks those
-warning lines out (UCX `WARN`, libfabric `<warn>`, Open MPI skipping an
-OpenFabrics port; error lines are left alone). The xcompact3d result keeps
-them out of `last_lines` and reports them under `transport` as information:
-the libraries, the device skipped, the transport offered instead, the
-launch's transport settings (`UCX_TLS`, `FI_PROVIDER`, `OMPI_MCA_pml` and so
-on) and a note that they are not the cause. They never set a `failed` or
-`no_output` verdict.
+every rank flushes.
 
 ### wrf
 
@@ -436,7 +354,7 @@ reused; force fields come with it.
 |---|---|---|
 | `nprocs`, `ppn` | 1, empty | pvserver ranks and ranks per node; see [Ranks per node](#ranks-per-node). Above 1 rank, jarvis-cd's MPI executor builds the launch, as it does for an MPI application: the chosen MPI's launcher, the package's hosts (its hostfile, narrowed by `host_slice`) with rank 0 on the node that runs JARVIS, or that node alone, and the resource graph's network. The supervisor runs that launch with the port it picks. `pvserver-launch.json` in `state_dir` is jarvis-cd's `launch_record()` (`jarvis.mpi-launch.v1`, jarvis-cd 2d26101c or newer) plus the launcher's `env`, so the launch's site-fact `advisories` and `reason_codes` stay as jarvis wrote them; a start failure in `pvserver-stop.json` carries them too |
 | `port` | 0 | TCP port; 0 picks a free one, reported in the ready event and the service runtime |
-| `dataset` | empty | Absolute path, on the site, of the dataset clients open (e.g. xcompact3d's `data.bp5`), named in the service runtime's dataset descriptor; empty means `state_dir` |
+| `dataset` | empty | Absolute path, on the site, of the dataset clients open (e.g. gray_scott's `gs.bp`), named in the service runtime's dataset descriptor; empty means `state_dir` |
 | `connect_id` | 0 | ParaView connect id the client must give; 0 for none |
 | `persist` | true | Start a new pvserver on the same port when a client disconnects. pvserver serves one client session, then exits; this package does not use `--multi-clients`. |
 | `crash_restarts` | 3 | Times a pvserver that crashes (a nonzero exit or a signal, such as a segfault in a filter) starts again on the same port, so a client can rejoin and rebuild its scene. The supervisor kills what is left of the crashed process group and waits for the port to close first. The ready record counts `crashes` with `last_crash` (its exit and last output lines); the stop record lists every crash. 0 means a crash ends the service. |
@@ -454,8 +372,8 @@ supervisor writes `pvserver-ready.json` when the port is listening and
 They go to `state_dir`, `{shared_dir}/pvserver` by default.
 
 Network fallback warnings in pvserver's output (UCX `WARN`, libfabric
-`<warn>`, Open MPI skipping an OpenFabrics port) are told apart the same way
-as in xcompact3d: the supervisor carries its own standard-library copy of
+`<warn>`, Open MPI skipping an OpenFabrics port) are told apart from errors:
+the supervisor carries its own standard-library copy of
 `_contract/transport.py`'s classifier, keeps those lines out of the failure
 evidence and the start-failure cause, and reports them in `pvserver-stop.json`
 under `transport` as information. The start error repeats them as a
@@ -471,7 +389,7 @@ node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
 client opens `cs://<host>:<port>` through an SSH tunnel to that node. The
 record's protocol is `tcp` (`base_url` `tcp://<host>:<port>`, jarvis-cd
 4007fd14 or newer); the messages name the `cs://` endpoint. `ready()` reads that record, so in a
-pipeline such as pvserver then xcompact3d, jarvis-cd starts xcompact3d only
+pipeline such as pvserver then gray_scott, jarvis-cd starts gray_scott only
 once pvserver is ready. A SIGTERM to the job's process tree stops every rank:
 the supervisor TERMs pvserver's process group (mpiexec and the local ranks),
 mpiexec passes it to the other nodes, and the stop grace (15 s) is within
@@ -485,7 +403,7 @@ another process finds the server that `ppl start` launched.
 
 #### Linger after the solver
 
-In a pipeline such as pvserver then xcompact3d, jarvis-cd stops pvserver once
+In a pipeline such as pvserver then gray_scott, jarvis-cd stops pvserver once
 the last step returns (`after_steps`). pvserver then lingers: its `stop`
 sends the supervisor SIGUSR1, and the supervisor keeps serving for `linger`
 seconds, restarting after each client session as `persist` says, then stops
@@ -524,5 +442,4 @@ cap, absent means no limit, and the resolved record then gives no
 
 ## License
 
-BSD-3-Clause. Xcompact3d inputs are from Incompact3d (BSD-3), see
-`clio_jarvis/xcompact3d/NOTICE`.
+BSD-3-Clause.
