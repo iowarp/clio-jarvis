@@ -20,6 +20,7 @@ from clio_jarvis._contract.spec import (
     REPO_PACKAGES_DIR,
     ContractError,
     find_packages,
+    is_view,
     load_contract,
     validate_view_descriptor,
 )
@@ -201,7 +202,9 @@ def test_unknown_parameter_in_output_path_is_refused(tmp_path):
 def test_view_descriptor_has_the_fields_the_paraview_view_reads(package):
     contract = load_contract(REPO_PACKAGES_DIR / package)
     config = contract.resolve_config({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})
-    for output in contract.data["outputs"]:
+    views = [output for output in contract.data["outputs"] if is_view(output)]
+    assert [output["name"] for output in views] == ["snapshots"]
+    for output in views:
         view = contract.view_descriptor(output, config, growing=True)
         validate_view_descriptor(view)
         assert view["path_kind"] == "directory"
