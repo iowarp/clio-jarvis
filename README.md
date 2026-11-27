@@ -151,9 +151,17 @@ output:
   "growing": true,
   "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 120},
   "display": {"array": "vort", "association": "POINTS", "representation": "Slice"},
+  "geometry": [{"path": "<shared_dir>/run/body.stl", "label": "body"}],
   "producer": {"package": "clio_jarvis.xcompact3d", "version": "0.3.0", "sha256": "..."}
 }
 ```
+
+`geometry` is optional. It lists surface files (absolute `path`, optional `label`
+and `visible`, default true) that a viewer opens beside the data, in the data's own
+coordinates. A contract declares them per output as `geometry: [{path, label,
+visible, when}]`. `path` is a template like the output path. `when` maps parameters
+to JSON schemas, and the entry is reported only when every one matches. Xcompact3d
+reports `{run_dir}/body.stl` (label `body`) for a body case and nothing for TGV.
 
 While the run goes, each progress event carries metadata `clio`
 (`clio.step.v1`) with `step`, `visible_steps`, `expected_steps` and the view

@@ -213,6 +213,19 @@ def test_view_descriptor_has_the_fields_the_paraview_view_reads(package):
         assert view["path"].startswith("/s/run/")
 
 
+def test_xcompact3d_view_names_the_body_surface_only_for_a_body_case():
+    contract = load_contract(REPO_PACKAGES_DIR / "xcompact3d")
+    base = {**CONFIG, "pkg_dir": str(contract.pkg_dir)}
+    output = contract.data["outputs"][0]
+    body = contract.view_descriptor(output, contract.resolve_config({"geometry": "/data/wing.stl"}, base), growing=True)
+    validate_view_descriptor(body)
+    assert body["geometry"] == [{"path": "/s/run/body.stl", "label": "body"}]
+    tgv = contract.view_descriptor(output, contract.resolve_config({"geometry": ""}, base), growing=True)
+    assert "geometry" not in tgv
+    with pytest.raises(ValueError, match="geometry"):
+        validate_view_descriptor({**body, "geometry": [{"path": "run/body.stl"}]})
+
+
 def test_headline_defaults():
     gs = load_contract(REPO_PACKAGES_DIR / "gray_scott").defaults()
     assert gs["steps"] // gs["plotgap"] == 100
