@@ -147,7 +147,7 @@ output:
   "growing": true,
   "follow": {"signal": "reader-time-steps", "poll_seconds": 2, "expected_steps": 100},
   "display": {"array": "V", "association": "CELLS", "representation": "Slice"},
-  "producer": {"package": "clio_jarvis.gray_scott", "version": "0.2.4", "sha256": "..."}
+  "producer": {"package": "clio_jarvis.gray_scott", "version": "0.2.5", "sha256": "..."}
 }
 ```
 
@@ -432,9 +432,8 @@ linger does.
   cancel the job then rather than setting `linger` to 0: the linger ends at
   once, and the view keeps the last picture it drew.
 
-Ask for the job's walltime as the solver's padded walltime plus twice the
-linger (6 minutes more at the default). Unused time is not charged when the
-job ends cleanly.
+The linger runs inside the job's walltime, so a walltime that leaves no room
+after the solver shortens it.
 
 Every package's `walltime` works the same way. There is no default and no
 cap, absent means no limit, and the resolved record then gives no

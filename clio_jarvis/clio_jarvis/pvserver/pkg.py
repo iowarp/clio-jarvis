@@ -169,8 +169,7 @@ class Pvserver(ClioService):
             {
                 "name": "walltime",
                 "msg": (
-                    "Wall-time limit in seconds; absent means no limit. Coupled to a solver, "
-                    "ask for the solver's padded walltime plus twice the linger"
+                    "Wall-time limit in seconds; absent means no limit. The linger runs inside it"
                 ),
                 "type": int,
                 "default": None,
