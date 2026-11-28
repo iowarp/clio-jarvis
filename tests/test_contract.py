@@ -178,6 +178,11 @@ def test_missing_part_is_refused_by_name(package, part, tmp_path):
     assert repr(part) in str(caught.value)
 
 
+def test_a_package_in_another_repository_carries_that_repositorys_name(tmp_path):
+    pkg_dir = _copy("gray_scott", tmp_path / "md_pkgs")
+    assert load_contract(pkg_dir).pkg_type == "md_pkgs.gray_scott"
+
+
 def test_service_part_is_required_for_a_service(tmp_path):
     pkg_dir = _copy("pvserver", tmp_path)
     data = yaml.safe_load((pkg_dir / "contract.yaml").read_text(encoding="utf-8"))

@@ -388,7 +388,8 @@ class Contract:
 
     @property
     def pkg_type(self) -> str:
-        return f"clio_jarvis.{self.package}"
+        # The repository's own name, so a copy of _contract in another repository names its packages.
+        return f"{self.pkg_dir.parent.name}.{self.package}"
 
     @property
     def version(self) -> str:
