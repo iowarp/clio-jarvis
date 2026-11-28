@@ -1,4 +1,4 @@
-﻿"""The RL40 contract of one clio-jarvis package: load it, check it, and resolve it.
+"""The RL40 contract of one clio-jarvis package: load it, check it, and resolve it.
 
 A package directory holds ``pkg.py`` (a jarvis-cd package), ``contract.yaml``
 (this contract), ``progress.py`` and ``artifacts.py`` (jarvis-cd providers that

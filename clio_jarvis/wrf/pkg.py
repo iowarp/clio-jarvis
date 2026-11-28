@@ -1,4 +1,4 @@
-﻿"""WRF (ARW, real-data) as a clio-jarvis package.
+"""WRF (ARW, real-data) as a clio-jarvis package.
 
 ``case_dir`` holds a case that real.exe already produced: ``wrfinput_d01``,
 ``wrfbdy_d01`` and the ``namelist.input`` they were made with, plus any
