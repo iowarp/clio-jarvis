@@ -247,7 +247,7 @@ class Warpx(Application):
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
             {"name": "install_method", "msg": "Installer for warpx", "type": str, "default": "spack"},
-            {"name": "install_query", "msg": "Spack spec; MPI stays the mpi virtual; ~qed because PICSAR would download inside the build; +app is the warpx.3d executable", "type": str, "default": "warpx@24.10 +app +mpi dims=3 compute=noacc ~qed"},
+            {"name": "install_query", "msg": "Spack spec; MPI stays the mpi virtual; +app is the warpx.3d executable", "type": str, "default": "warpx@24.10 +app +mpi dims=3 compute=noacc"},
             {"name": "install_repos", "msg": "Spack repositories beyond the builtin one, relative to the package directory", "type": list, "default": ["../_spack"]},
             {"name": "nprocs", "msg": "MPI processes; WarpX spreads the grid's boxes over them (see the contract's sizing)", "type": int, "default": 8},
             {

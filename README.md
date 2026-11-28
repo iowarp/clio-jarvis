@@ -46,7 +46,7 @@ jarvis-cd's `install_method`, `install_query` and `install_repos`:
 |---|---|---|
 | `gray_scott` | `gray-scott@2.10.2 ^adios2+mpi` | `../_spack` |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
-| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../_spack` |
+| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc` | `../_spack` |
 | `lammps` | `lammps@20240829.1 +mpi` | none (Spack's builtin recipe, so a site's LAMMPS is reused) |
 | `gromacs` | `gromacs@2024.3 +mpi` | none (Spack's builtin recipe, so a site's GROMACS is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |

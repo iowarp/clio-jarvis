@@ -136,7 +136,7 @@ provenance:
     - "{run_dir}/inputs"
     - "{run_dir}/clio-case.json"
   upstream:
-    - name: WarpX 24.10 (3D, MPI, noacc, ~qed), as Spack's builtin warpx recipe builds it
+    - name: WarpX 24.10 (3D, MPI, noacc, QED with PICSAR 24.09), as Spack's builtin warpx recipe builds it
       version: "24.10"
       url: https://github.com/BLAST-WarpX/warpx/tree/24.10
 
