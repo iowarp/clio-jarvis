@@ -1,4 +1,4 @@
-﻿# clio-jarvis
+# clio-jarvis
 
 JARVIS packages for the clio relay. Each package carries a contract (RL40) that
 relay reads before it runs anything, so relay never has to guess a package's
@@ -44,7 +44,7 @@ jarvis-cd's `install_method`, `install_query` and `install_repos`:
 
 | Package | `install_query` | `install_repos` |
 |---|---|---|
-| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../_spack` |
+| `gray_scott` | `gray-scott@2.10.2 ^adios2+mpi` | `../_spack` |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
 | `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../_spack` |
 | `lammps` | `lammps@20240829.1 +mpi` | none (Spack's builtin recipe, so a site's LAMMPS is reused) |
@@ -86,7 +86,7 @@ packages here are MPI codes or ParaView, so they all use Spack.
 
 | Recipe | What it adds |
 |---|---|
-| `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, built against an installed ADIOS2 2.10. `+clio` adds a double `time` and points the `vtk.xml` TIME array at it, so the reader shows model time. |
+| `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, unchanged, built against an installed ADIOS2 2.10. Spack has no recipe for it, and its adios2 recipe doesn't build the examples. |
 | `warpx` | Spack's builtin `warpx`, subclassed. The builtin always builds the `pip_wheel` target (an assignment inside `with when("+python")`) and always runs its `pip_install_nodeps` phase, so `~python` builds fail; this recipe does both only with `+python`. |
 
 A package's sha256 is a digest of its directory plus the repository's `_contract/` and
@@ -213,7 +213,7 @@ task geometry, and outside one leaves placement to `mpiexec`.
 | `run_dir` | `{shared_dir}/run` | Output goes to `{run_dir}/gs.bp` |
 
 On 4 Ares ranks the defaults write an output step about every 2.7 s, for
-about 4.5 minutes. The software is the `clio.gray-scott +clio` recipe.
+about 4.5 minutes. The software is ADIOS2's own example, built by the `clio.gray-scott` recipe.
 
 **Live output on a shared file system.** ADIOS2 does not sync, so a node that
 writes `gs.bp` keeps new steps in its page cache and writes them back in

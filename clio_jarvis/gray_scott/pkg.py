@@ -3,10 +3,9 @@
 The run directory gets ``settings.json`` and ``adios2.xml``. The solver runs
 under MPI there and writes ``gs.bp`` with a ``vtk.xml`` attribute, so ParaView's
 ADIOS2VTXReader opens it as image data and sees each new step as it lands. The
-software comes from the ``clio.gray-scott`` Spack recipe in the repository's
-``_spack/`` directory, whose ``+clio`` variant adds that attribute and the
-simulation time; ``jarvis ppl install`` builds it from the menu's install
-entries. contract.yaml declares what relay checks before it submits.
+software is ADIOS2's own example, unchanged, built by the ``clio.gray-scott``
+Spack recipe in the repository's ``_spack/`` directory (Spack has none);
+``jarvis ppl install`` builds it from the menu's install entries. contract.yaml declares what relay checks before it submits.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ class GrayScott(Application):
                 "name": "install_query",
                 "msg": "Spack spec; MPI stays the mpi virtual, so the site's MPI is reused",
                 "type": str,
-                "default": "gray-scott@2.10.2 +clio ^adios2+mpi",
+                "default": "gray-scott@2.10.2 ^adios2+mpi",
             },
             {
                 "name": "install_repos",

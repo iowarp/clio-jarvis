@@ -57,7 +57,7 @@ outputs:
     reader: ADIOS2VTXReader
     expected_steps: {div: [steps, plotgap]}
     follow: {signal: reader-time-steps, poll_seconds: 2}
-    time: {unit: simulation time, step_interval: {mul: [dt, plotgap]}}
+    time: {unit: step, step_interval: {param: plotgap}}
     display:
       array: V
       association: CELLS
@@ -90,9 +90,8 @@ provenance:
     - "{run_dir}/adios2.xml"
   upstream:
     - name: >-
-        ADIOS2 v2.10.2 examples/simulations/gray-scott, built by the Spack
-        recipe clio.gray-scott +clio in _spack/, whose patch() method adds the
-        simulation time to vtk.xml
+        ADIOS2 v2.10.2 examples/simulations/gray-scott, unchanged, built by
+        the Spack recipe clio.gray-scott in _spack/
       version: "2.10.2"
       url: https://github.com/ornladios/ADIOS2/tree/v2.10.2/examples/simulations/gray-scott
 

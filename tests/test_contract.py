@@ -885,7 +885,7 @@ def test_an_install_part_in_the_contract_is_refused(tmp_path):
 
 
 def test_install_methods_list_the_alternatives(tmp_path, monkeypatch):
-    spack_option = {"method": "spack", "query": "gray-scott@2.10.2 +clio ^adios2+mpi", "repos": ["../_spack"]}
+    spack_option = {"method": "spack", "query": "gray-scott@2.10.2 ^adios2+mpi", "repos": ["../_spack"]}
     image = {"method": "container", "query": "ghcr.io/example/gray-scott:2.10.2"}
     contract = load_contract(_with_install("gray_scott", tmp_path, monkeypatch, _methods([spack_option, image])))
     described = contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
