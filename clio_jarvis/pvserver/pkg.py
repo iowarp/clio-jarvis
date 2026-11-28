@@ -39,10 +39,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from jarvis_cd.core.pkg import Service
 from jarvis_cd.shell import Exec, LocalExecInfo, MpiExecInfo
 from jarvis_cd.util.hostfile import Hostfile
-
-from clio_jarvis._contract.base import ClioService, mpi_safe_env
 
 SUPERVISOR = Path(__file__).resolve().parent / "supervisor.py"
 READY_FILE = "pvserver-ready.json"
@@ -53,6 +52,8 @@ LAUNCH_FILE = "pvserver-launch.json"
 DESCRIPTOR_FILE = "dataset-descriptor.json"
 AUTHORIZATION_FILE = "service-authorization.token"
 HOST = "localhost"
+# The contract's service.stop.grace_seconds: SIGTERM, then this long, then SIGKILL.
+STOP_GRACE_SECONDS = 15
 
 
 def launch_document(launch: Any) -> dict[str, Any]:
@@ -84,18 +85,37 @@ def _supervisor_module():
     return module
 
 
-class Pvserver(ClioService):
+class Pvserver(Service):
     """A ParaView server for remote rendering of clio outputs."""
 
     clio_program = "pvserver"
-    clio_probe_arguments = ("--version",)
-    clio_capabilities = ("paraview_server",)
 
     _clio_service_exec: Exec | None = None
     _clio_holding: bool = False
 
+    def _ready(self) -> dict[str, Any]:
+        """The config with state_dir filled ({shared_dir}/pvserver when empty)."""
+        self.config["state_dir"] = str(self.config.get("state_dir") or Path(str(self.shared_dir)) / "pvserver")
+        return self.config
+
+    def ppn(self) -> int | None:
+        """ppn, else cores_per_node; None leaves it to JARVIS's MPI launch inside the allocation."""
+        for name in ("ppn", "cores_per_node"):
+            value = self.config.get(name)
+            if value not in (None, ""):
+                return int(value)
+        return None
+
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
+            {"name": "install_method", "msg": "Installer for pvserver", "type": str, "default": "spack"},
+            {
+                "name": "install_query",
+                "msg": "Spack spec; Spack's builtin paraview recipe, MPI stays the mpi virtual so the site's MPI and Mesa are reused; 5.13.1 matches the CLIO ParaView MCP client",
+                "type": str,
+                "default": "paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa",
+            },
+            {"name": "install_repos", "msg": "Spack repositories beyond the builtin one, relative to the package directory", "type": list, "default": []},
             {"name": "nprocs", "msg": "pvserver processes", "type": int, "default": 1},
             {
                 "name": "ppn",
@@ -178,9 +198,6 @@ class Pvserver(ClioService):
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 
-    def _clio_prepare(self, config: dict[str, Any]) -> None:
-        Path(config["state_dir"]).mkdir(parents=True, exist_ok=True)
-
     # -- files ---------------------------------------------------------------
 
     def _clio_hosts(self) -> list[str]:
@@ -191,8 +208,7 @@ class Pvserver(ClioService):
         return list(hostfile.hosts)
 
     def _state(self, name: str) -> Path:
-        self._clio_ensure_configured(prepare=False)
-        return Path(self.config["state_dir"]) / name
+        return Path(self._ready()["state_dir"]) / name
 
     def _read_json(self, name: str) -> dict[str, Any] | None:
         try:
@@ -283,12 +299,12 @@ class Pvserver(ClioService):
         supervisor = _supervisor_module()
         hosts = self._clio_hosts()
         ordered = supervisor.ordered_hosts(hosts) if hosts else []
-        ppn = self.clio_ppn()
+        ppn = self.ppn()
         if ppn is None and ordered:
             ppn = -(-nprocs // len(ordered))
         rank_command = shlex.join(
             supervisor.pvserver_arguments(
-                self.clio_executable(), supervisor.PORT_PLACEHOLDER, int(self.config["connect_id"])
+                self.clio_program, supervisor.PORT_PLACEHOLDER, int(self.config["connect_id"])
             )
         )
         launch = Exec(
@@ -297,7 +313,7 @@ class Pvserver(ClioService):
                 nprocs=nprocs,
                 ppn=ppn,
                 hostfile=Hostfile(hosts=ordered, find_ips=False) if ordered else None,
-                env=mpi_safe_env(self.mod_env),
+                env=dict(self.mod_env or {}),
                 cwd=str(state_dir),
                 dry_run=True,
             ),
@@ -321,8 +337,7 @@ class Pvserver(ClioService):
         return ["--launch", str(path)]
 
     def start(self) -> None:
-        self._clio_ensure_configured(prepare=True)
-        config = self.config
+        config = self._ready()
         state_dir = Path(config["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
         for name in (READY_FILE, STOP_FILE):
@@ -331,7 +346,7 @@ class Pvserver(ClioService):
             sys.executable,
             str(SUPERVISOR),
             "--state-dir", str(state_dir),
-            "--executable", self.clio_executable(),
+            "--executable", self.clio_program,
             "--port", str(int(config["port"])),
             "--nprocs", str(int(config["nprocs"])),
             "--connect-id", str(int(config["connect_id"])),
@@ -483,7 +498,7 @@ class Pvserver(ClioService):
                 signal.signal(number, handler)
 
     def _grace(self) -> int:
-        return int(self.clio_contract().data["service"]["stop"].get("grace_seconds", 15))
+        return STOP_GRACE_SECONDS
 
     def _terminate(self, number: int) -> None:
         pid = self._supervisor_pid()

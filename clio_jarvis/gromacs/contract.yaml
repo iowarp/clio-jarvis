@@ -29,13 +29,6 @@ summary: >-
   MPI (gmx_mpi, single precision); a site that already has one is reused as
   it is. MPI, the launcher, the nodes and the ranks per node come from the
   site through JARVIS, never from the files.
-install:
-  method: spack
-  # MPI stays the mpi virtual, so the site's MPI is reused; Spack's builtin
-  # gromacs recipe builds gmx_mpi with FFTW and OpenMP.
-  query: gromacs@2024.3 +mpi
-  repos: []
-
 parameters:
   required: [nprocs, mdp, structure, topology, nsteps, frame_interval]
   properties:

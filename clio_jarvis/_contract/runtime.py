@@ -75,7 +75,7 @@ def _number(text: str) -> int | float | str:
 
 
 def _contract_for(pkg_dir: Path, package: Mapping[str, Any]) -> Contract | None:
-    contract = load_contract(pkg_dir)
+    contract = load_contract(pkg_dir, check=False)
     if package.get("pkg_type") != contract.pkg_type:
         return None
     return contract

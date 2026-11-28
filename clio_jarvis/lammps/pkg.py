@@ -33,7 +33,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from clio_jarvis._contract.base import ClioApplication
+from jarvis_cd.core.pkg import Application
+from jarvis_cd.shell import Exec, MpiExecInfo
 from clio_jarvis._contract.points import write_points_vtp
 from clio_jarvis._contract.publisher import PollingPublisher
 
@@ -209,15 +210,48 @@ class FramePublisher(PollingPublisher):
                 )
 
 
-class Lammps(ClioApplication):
+class Lammps(Application):
     """LAMMPS on a native input script, with a growing series of particle frames."""
 
     clio_program = "lmp"
-    clio_probe_arguments = None
-    clio_capabilities = ("mpi_execution", "lammps", "particle_frames")
+
+    def run_dir(self) -> Path:
+        return Path(self.config.get("run_dir") or Path(str(self.shared_dir)) / "run")
+
+    def _ready(self) -> dict[str, Any]:
+        """The config with run_dir filled, as the run and the progress providers read it."""
+        self.config["run_dir"] = str(self.run_dir())
+        return self.config
+
+    def ppn(self) -> int | None:
+        """ppn, else cores_per_node; None leaves it to JARVIS's MPI launch inside the allocation."""
+        for name in ("ppn", "cores_per_node"):
+            value = self.config.get(name)
+            if value not in (None, ""):
+                return int(value)
+        return None
+
+    def _mpi(self, command: str, cwd: str, line_callback) -> dict[str, int]:
+        info = MpiExecInfo(
+            nprocs=int(self.config["nprocs"]),
+            ppn=self.ppn(),
+            hostfile=self.hostfile,
+            env=self.mod_env,
+            cwd=cwd,
+            line_callback=line_callback,
+        )
+        return dict(Exec(command, info).run().exit_code)
+
+    def _configure(self, **kwargs: Any) -> None:
+        """Write the run's input files on the configuring host, where relative paths are meant."""
+        super()._configure(**kwargs)
+        self._prepare(self._ready())
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
+            {"name": "install_method", "msg": "Installer for lammps", "type": str, "default": "spack"},
+            {"name": "install_query", "msg": "Spack spec; MPI stays the mpi virtual, so the site's MPI is reused, and the builtin recipe builds lmp with the default packages", "type": str, "default": "lammps@20240829.1 +mpi"},
+            {"name": "install_repos", "msg": "Spack repositories beyond the builtin one, relative to the package directory", "type": list, "default": []},
             {"name": "nprocs", "msg": "MPI processes; LAMMPS gives each rank one brick of the box (see the contract's sizing)", "type": int, "default": 8},
             {
                 "name": "ppn",
@@ -261,7 +295,7 @@ class Lammps(ClioApplication):
         path = Path(value.replace("{pkg_dir}", str(self.pkg_dir))).expanduser()
         return path if path.is_absolute() else Path(os.getcwd()) / path
 
-    def _clio_prepare(self, config: dict[str, Any]) -> None:
+    def _prepare(self, config: dict[str, Any]) -> None:
         steps, interval = int(config["steps"]), int(config["dump_interval"])
         if steps % interval:
             raise ValueError(f"steps {steps} must be a whole number of dump_interval {interval}")
@@ -349,7 +383,7 @@ class Lammps(ClioApplication):
                 path.unlink()
 
     def start(self) -> None:
-        self._clio_ensure_configured(prepare=True)
+        self._ready()
         run_dir = Path(self.config["run_dir"])
         # A rerun starts a fresh series; a viewer must not see the last run's frames.
         self._remove_outputs(run_dir)
@@ -362,7 +396,7 @@ class Lammps(ClioApplication):
         began = time.monotonic()
         publisher.start()
         try:
-            codes = self._clio_mpi(command, cwd=str(run_dir), line_callback=publisher, check=False)
+            codes = self._mpi(command, str(run_dir), publisher)
         finally:
             publisher.finish()
         try:
@@ -408,5 +442,5 @@ class Lammps(ClioApplication):
         """LAMMPS runs its script to the end."""
 
     def clean(self) -> None:
-        self._clio_ensure_configured(prepare=False)
+        self._ready()
         self._remove_outputs(Path(self.config["run_dir"]))

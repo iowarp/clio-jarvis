@@ -28,13 +28,6 @@ summary: >-
   is. Styles from other LAMMPS packages need a site build that has them.
   MPI, the launcher, the nodes and the ranks per node come from the site
   through JARVIS, never from the script.
-install:
-  method: spack
-  # MPI stays the mpi virtual, so the site's MPI is reused; Spack's builtin
-  # lammps recipe builds lmp with the default packages.
-  query: lammps@20240829.1 +mpi
-  repos: []
-
 parameters:
   required: [nprocs, script, steps, dump_interval]
   properties:

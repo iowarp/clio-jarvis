@@ -1,4 +1,4 @@
-{
+﻿{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/iowarp/clio-jarvis/schemas/package-contract.v1.json",
   "title": "clio-jarvis package contract, version 1",
@@ -15,7 +15,7 @@
     "install_repos": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "spack only: Spack repositories holding recipes the query needs beyond Spack's builtin, relative to the clio-jarvis repository root."
+      "description": "spack only: Spack repositories holding recipes the query needs beyond Spack's builtin, relative to the package directory, each a top-level _ directory of the repository."
     },
     "install_channels": {
       "type": "array",

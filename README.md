@@ -1,16 +1,16 @@
-# clio-jarvis
+﻿# clio-jarvis
 
 JARVIS packages for the clio relay. Each package carries a contract (RL40) that
 relay reads before it runs anything, so relay never has to guess a package's
 parameters, resources, outputs, progress, ports or provenance.
 
-clio-jarvis layers on top of [jarvis-cd](https://github.com/grc-iit/jarvis-cd)
-and does not change it. Its packages install through jarvis-cd's Spack
-installer (`install_method: spack`), so they need a jarvis-cd with that
-installer and `jarvis ppl install`: jarvis-cd 4007fd14 or newer (branch
-`jaimecernuda-execution-lifecycle`, after 1.8.1). No jarvis-cd release has it
-yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
-`ServiceProtocol.TCP` when it starts and stops with an error on an older one.
+clio-jarvis is a plain JARVIS repository: every package is a
+`jarvis_cd.core.pkg.Application` or `Service` with a JARVIS menu, and the
+contract is a declaration next to it that relay validates before it submits
+anything. There is no clio base class, and no package uses JARVIS's builtin
+repository. The packages need jarvis-cd's `relay_ready` branch (after 1.8.1),
+which has `jarvis ppl install` with the Spack installer and the PSI/J
+submission.
 
 | Package | Kind | What it does |
 |---|---|---|
@@ -23,32 +23,37 @@ yet, so `pyproject.toml` can only say `jarvis-cd>=1.8.1`; pvserver checks for
 
 ## Install
 
+A site needs three steps:
+
 ```bash
-git clone https://github.com/iowarp/clio-jarvis
-pip install -e clio-jarvis[test]
-jarvis repo add $PWD/clio-jarvis/clio_jarvis
+uv tool install "jarvis-cd @ git+https://github.com/grc-iit/jarvis-cd@relay_ready"
+jarvis repo rm builtin
+jarvis repo add https://github.com/iowarp/clio-jarvis   # or the path of a clio_jarvis directory
 ```
 
-The packages read `schemas/` and `spack/` from the checkout, so install from a
-checkout.
+A git URL is cloned into the JARVIS root as `repos/clio_jarvis`. A path must
+end in a directory named `clio_jarvis`, the name of the Python package inside
+it. The contract helpers in `_contract/` and the Spack recipes in `_spack/`
+ship inside that directory, so JARVIS loads them the way it loads any repo.
+Nothing is pip installed on the site.
 
 ### Software
 
-Every package declares its software as a Spack spec in its contract's
-`install` part, and its configure menu defaults to that spec:
+Every package names its software in its `pkg.py` menu, as the defaults of
+jarvis-cd's `install_method`, `install_query` and `install_repos`:
 
 | Package | `install_query` | `install_repos` |
 |---|---|---|
-| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../../../spack` (the repository's `spack/`) |
+| `gray_scott` | `gray-scott@2.10.2 +clio ^adios2+mpi` | `../_spack` |
 | `wrf` | `wrf@4.6.1 build_type=dmpar compile_type=em_real` | none (Spack's builtin recipe, so a site's WRF is reused) |
-| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../../../spack` (the repository's `spack/`) |
+| `warpx` | `warpx@24.10 +app +mpi dims=3 compute=noacc ~qed` | `../_spack` |
 | `lammps` | `lammps@20240829.1 +mpi` | none (Spack's builtin recipe, so a site's LAMMPS is reused) |
 | `gromacs` | `gromacs@2024.3 +mpi` | none (Spack's builtin recipe, so a site's GROMACS is reused) |
 | `pvserver` | `paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa` | none (Spack's builtin recipe) |
 
 ```bash
-jarvis ppl install +check   # what is already there, what would be built
-jarvis ppl install          # build what is missing into the pipeline's Spack environment
+jarvis ppl install +check    # what is already there, what would be built
+jarvis ppl install +submit   # build what is missing in a batch job, through PSI/J
 ```
 
 jarvis-cd finds each spec first and builds only what is missing, in a Spack
@@ -62,37 +67,21 @@ programs on the PATH the Spack environment gives it. There is no other install
 path: no build scripts, no `executable` paths and no environment scripts.
 
 `install_repos` entries are relative to the package directory (the one holding
-`pkg.py`). jarvis-cd resolves them against that directory on the host that
-loads the package, which is the site: relay stages this repository there and
-runs `jarvis repo add`, so no path of the configuring machine is stored. Each
-entry must hold a `repo.yaml`.
+`pkg.py`), and jarvis-cd resolves them on the site. Each entry must hold a
+`repo.yaml`.
 
 #### Other install methods
 
-A contract's `install` part can name any method jarvis-cd installs with:
-`spack`, `pip` (a venv), `conda` (an env, with Miniforge when the site has no
-conda) or `container` (an image, with apptainer or rootless podman). The query
-is then pip requirements, conda specs or an image, and conda takes
-`channels`. `alternatives` lists other ways to install the same software:
+A menu can name any method jarvis-cd installs with: `spack`, `pip` (a venv),
+`conda` (an env, with Miniforge when the site has no conda) or `container` (an
+image, with apptainer or rootless podman). The query is then pip requirements,
+conda specs or an image, and conda takes `install_channels`. jarvis-cd owns
+what each method does. The validator refuses pip and conda for a `pencil2d` or
+`block3d` code and for a query that names an MPI (`mpi4py` too), so the site's
+MPI is always the one used, and an MPI pinned in a Spack query. All the
+packages here are MPI codes or ParaView, so they all use Spack.
 
-```yaml
-install:
-  method: spack
-  query: py-rich@13.7.1
-  repos: []
-  alternatives:
-    - {method: pip, query: "rich==13.7.1"}
-```
-
-With alternatives the menu leaves `install_method` empty and sets
-`install_methods`, so jarvis-cd uses the method this site fits and asks the
-person when several fit. jarvis-cd owns what each method does; relay passes it
-through. MPI codes stay on Spack: pip and conda are refused for a `pencil2d`
-or `block3d` code and for a query that names an MPI (`mpi4py` too), so the
-site's MPI is always the one used. All the packages here are MPI codes or
-ParaView, so they all use Spack.
-
-`spack/` is a Spack repository with namespace `clio`, written for Spack
+`_spack/` is a Spack repository with namespace `clio`, written for Spack
 0.23.1:
 
 | Recipe | What it adds |
@@ -100,8 +89,9 @@ ParaView, so they all use Spack.
 | `gray-scott@2.10.2` | ADIOS2's Gray-Scott example, built against an installed ADIOS2 2.10. `+clio` adds a double `time` and points the `vtk.xml` TIME array at it, so the reader shows model time. |
 | `warpx` | Spack's builtin `warpx`, subclassed. The builtin always builds the `pip_wheel` target (an assignment inside `with when("+python")`) and always runs its `pip_install_nodeps` phase, so `~python` builds fail; this recipe does both only with `+python`. |
 
-A package's sha256 covers its Spack repositories too, so a recipe change is a
-new package version.
+A package's sha256 is a digest of its directory plus the repository's `_contract/` and
+`_spack/`, computed the same way however the package reached the site, so a
+recipe change is a new package version.
 
 ## The contract
 
@@ -113,17 +103,17 @@ more than the generic checks, `selftest.py`. `contract.yaml` follows
 | Part | Holds |
 |---|---|
 | `title` | Optional: the software's name as a person knows it (`LAMMPS`, `GROMACS`), which relay's questions and job cards show instead of the package name. |
-| `install` | How JARVIS installs the software: `method` (`spack`, `pip`, `conda` or `container`), its `query`, Spack `repos` (relative to the checkout) or conda `channels`, and optional `alternatives`. They become the menu defaults `install_method`, `install_query`, `install_repos` (rewritten relative to the package directory), `install_channels` and `install_methods`. An MPI pinned in a Spack query is refused, and pip or conda for an MPI code. |
 | `parameters` | Limits on the `pkg.py` menu, the fields to show for review, and fill rules such as `run_dir: "{shared_dir}/run"`. The menu stays the single list of parameters. `cases` holds rules for one case only, such as a parameter that case uses and the others ignore, so it is checked only when the configuration matches the case's `when`. |
 | `resources` | PSI/J process count, processes per node, duration and queue, as parameter references. |
 | `sizing` | How the case maps to ranks and nodes: the mesh, the decomposition (`pencil2d`, `block3d`, `data-parallel` or `none`), the rules for choosing `nprocs`, processes per node (`param`, `default: physical_cores` and `cores`, the parameter with the target partition's physical cores per node), the node count (`ceil_div: [nprocs, ppn]`) and an optional cost rule. Arithmetic (`div`, `mul`, `add`, `ceil_div`) takes two operands, each a number, a parameter name or more arithmetic, so a frame count with the first frame is `{add: [{div: [nsteps, nstout]}, 1]}`. |
 | `outputs` | One entry per output: path, format, role and, for snapshots, reader, expected steps and display. Snapshots become view descriptors; `statistics`, `restart` and `result` outputs are reported as artifacts when the run has written them. |
 | `progress` | Stdout patterns for steps, completion and readiness. `announces: before-write` means the step line comes before that step is readable. |
 | `service` | Services only: ports, health check, protection, stop signal and stop record, the jarvis-cd service runtime it reports (`runtime`: record, lifecycle, endpoint), maximum lifetime, and `data_flow`: which way data moves between the service and the pipeline's other steps (`in`: the steps with outputs feed it, as a solver feeds pvserver; `out`: it feeds them), whatever order JARVIS starts them in. |
-| `provenance` | Input files hashed into `clio-contract.json`, and the upstream code. |
+| `provenance` | The input files relay hashes into the job's record, and the upstream code. |
 | `selftest` | Parameters and time limit for the self-test, and an optional extra check script. |
 
-A package missing any part is refused, and the error names the part:
+There is no `install` part: the menu says how the software is installed, and a
+contract with one is refused. A package missing any part is refused, and the error names the part:
 
 ```
 package 'gray_scott' refused: contract part 'outputs' is missing
@@ -162,9 +152,9 @@ While the run goes, each progress event carries metadata `clio`
 descriptor. When the run ends, the last event has `growing: false`. Services
 send one `ready` event (`clio.service-ready.v1`) with the port they chose.
 
-At configure time each package writes `clio-contract.json` into its shared
-directory, holding the resolved parameters, resources, view descriptors, input
-digests and the package's sha256.
+The packages read none of this at run time beyond what their providers need:
+JARVIS runs them as it runs any package, and relay checks the contract before
+it submits.
 
 ## Command line
 
@@ -188,7 +178,7 @@ The self-test checks:
 
 - The package's Spack spec is installed (`jarvis ppl install +check`); if not,
   it stops and says to run `jarvis ppl install`.
-- `clio-contract.json` matches the package hash and holds input digests.
+- The contract's fills and limits accept the configuration JARVIS resolved.
 - Applications: progress steps 1 to N in order, with valid growing view
   descriptors; a last `completed` event with `growing: false`; a finalized
   artifact. With `pvpython` on PATH (`spack load paraview`), pvpython opens
@@ -207,13 +197,10 @@ Run the unit tests with `pytest`.
 ### Ranks per node
 
 Every package takes `ppn` (ranks per node) and `cores_per_node`. An empty
-`ppn` is filled at configure from `cores_per_node`, the target partition's
-physical cores per node, which relay's `describe` reports for each partition
-and passes in. If both are empty, the launch decides inside the job, on the
-job's node: the physical cores from `lscpu` (or `/proc/cpuinfo`), capped by
-`SLURM_CPUS_ON_NODE`. Outside a batch allocation it uses this host's physical
-cores only when every rank runs here, and otherwise leaves placement to
-`mpiexec`. The configuring host, usually a login node, never sets it.
+`ppn` takes `cores_per_node`, the target partition's physical cores per node,
+which relay's `describe` reports for each partition and passes in. If both are
+empty, JARVIS's MPI launch decides inside the allocation from the scheduler's
+task geometry, and outside one leaves placement to `mpiexec`.
 
 ### gray_scott
 
@@ -290,7 +277,7 @@ diagnostics are flushed), moves each plotfile up to step N into
 pattern counts. ParaView's `AMReXBoxLibGridReader` follows the series;
 the contract selects the field arrays, which that reader leaves off by
 default. `clio-run-result.json` (`run-result`) has the verdict, steps,
-simulated time and seconds per step. The software is `spack/`'s
+simulated time and seconds per step. The software is `_spack/`'s
 `clio.warpx`, Spack's builtin `warpx` recipe with one fix: the builtin
 (Spack 0.23) always runs its Python wheel steps, so every `~python` build
 fails. It is built without QED (PICSAR's source would be fetched
@@ -387,8 +374,7 @@ linger, `stopping` on SIGTERM, at `max_lifetime` or at the linger's end, and
 `stopped` (or `failed`) at the end. The endpoint is the
 node running rank 0 and the port; pvserver listens on 127.0.0.1 there, so a
 client opens `cs://<host>:<port>` through an SSH tunnel to that node. The
-record's protocol is `tcp` (`base_url` `tcp://<host>:<port>`, jarvis-cd
-4007fd14 or newer); the messages name the `cs://` endpoint. `ready()` reads that record, so in a
+record's protocol is `tcp` (`base_url` `tcp://<host>:<port>`); the messages name the `cs://` endpoint. `ready()` reads that record, so in a
 pipeline such as pvserver then gray_scott, jarvis-cd starts gray_scott only
 once pvserver is ready. A SIGTERM to the job's process tree stops every rank:
 the supervisor TERMs pvserver's process group (mpiexec and the local ranks),
@@ -396,9 +382,9 @@ mpiexec passes it to the other nodes, and the stop grace (15 s) is within
 jarvis-cd's 20 s before KILL.
 
 `jarvis ppl start` and `jarvis ppl stop` don't call configure. Every package
-resolves its fill rules (`state_dir`, `run_dir`) when it starts or stops
-unconfigured, and `start` also writes the inputs and `clio-contract.json`.
-The fills depend only on the pipeline's directories, so a `ppl stop` in
+fills an empty `state_dir` or `run_dir` when it starts or stops, and writes its
+input files in configure (where relative paths are meant) or in start. The
+fills depend only on the pipeline's directories, so a `ppl stop` in
 another process finds the server that `ppl start` launched.
 
 #### Linger after the solver

@@ -1,4 +1,4 @@
-"""WRF (ARW, real-data) as a clio-jarvis package.
+﻿"""WRF (ARW, real-data) as a clio-jarvis package.
 
 ``case_dir`` holds a case that real.exe already produced: ``wrfinput_d01``,
 ``wrfbdy_d01`` and the ``namelist.input`` they were made with, plus any
@@ -31,7 +31,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from clio_jarvis._contract.base import ClioApplication
+from jarvis_cd.core.pkg import Application
+from jarvis_cd.shell import Exec, MpiExecInfo
 from clio_jarvis._contract.fetch import fetch_archive
 from clio_jarvis._contract.spec import in_job
 
@@ -228,15 +229,53 @@ class RslFollower:
             time.sleep(0.5)
 
 
-class Wrf(ClioApplication):
+class Wrf(Application):
     """WRF ARW on a real-data case with netCDF history output."""
 
     clio_program = "wrf.exe"
-    clio_probe_arguments = None
-    clio_capabilities = ("mpi_execution", "wrf_em_real", "netcdf_history")
+
+    def run_dir(self) -> Path:
+        return Path(self.config.get("run_dir") or Path(str(self.shared_dir)) / "run")
+
+    def _ready(self) -> dict[str, Any]:
+        """The config with run_dir filled, as the run and the progress providers read it."""
+        self.config["run_dir"] = str(self.run_dir())
+        return self.config
+
+    def ppn(self) -> int | None:
+        """ppn, else cores_per_node; None leaves it to JARVIS's MPI launch inside the allocation."""
+        for name in ("ppn", "cores_per_node"):
+            value = self.config.get(name)
+            if value not in (None, ""):
+                return int(value)
+        return None
+
+    def _runs_here(self) -> bool:
+        """True when the ranks run on this host only (no hostfile, or a local one)."""
+        hostfile = self.hostfile
+        return hostfile is None or not len(hostfile) or hostfile.is_local()
+
+    def _mpi(self, command: str, cwd: str, line_callback) -> dict[str, int]:
+        info = MpiExecInfo(
+            nprocs=int(self.config["nprocs"]),
+            ppn=self.ppn(),
+            hostfile=self.hostfile,
+            env=self.mod_env,
+            cwd=cwd,
+            line_callback=line_callback,
+        )
+        return dict(Exec(command, info).run().exit_code)
+
+    def _configure(self, **kwargs: Any) -> None:
+        """Write the run's input files on the configuring host, where relative paths are meant."""
+        super()._configure(**kwargs)
+        self._prepare(self._ready())
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
+            {"name": "install_method", "msg": "Installer for wrf", "type": str, "default": "spack"},
+            {"name": "install_query", "msg": "Spack spec; MPI stays the mpi virtual, so the site's MPI and any site WRF are reused", "type": str, "default": "wrf@4.6.1 build_type=dmpar compile_type=em_real"},
+            {"name": "install_repos", "msg": "Spack repositories beyond the builtin one, relative to the package directory", "type": list, "default": []},
             {"name": "nprocs", "msg": "MPI processes; WRF splits domain 1 into an nproc_x x nproc_y grid of patches (see the contract's sizing)", "type": int, "default": 40},
             {
                 "name": "ppn",
@@ -275,12 +314,12 @@ class Wrf(ClioApplication):
             {"name": "queue", "msg": "Batch queue; empty means the site default", "type": str, "default": ""},
         ]
 
-    def _clio_prepare(self, config: dict[str, Any]) -> None:
+    def _prepare(self, config: dict[str, Any]) -> None:
         case = Path(os.path.expanduser(str(config["case_dir"])))
         missing = [name for name in _CASE_FILES if not (case / name).is_file()]
         url = str(config.get("case_url") or "")
         if missing and url:
-            if not in_job() and not self._clio_runs_here():
+            if not in_job() and not self._runs_here():
                 # A scheduled pipeline configured on its submitting host: the job fetches.
                 return
             fetch_archive(
@@ -385,7 +424,7 @@ class Wrf(ClioApplication):
         return [*run_dir.glob("wrfout_d01_*"), *run_dir.glob("wrfrst_d01_*"), *run_dir.glob("rsl.*"), run_dir / RESULT_NAME]
 
     def start(self) -> None:
-        self._clio_ensure_configured(prepare=True)
+        self._prepare(self._ready())
         run_dir = Path(self.config["run_dir"])
         for path in self._run_outputs(run_dir):
             if path.exists():
@@ -396,7 +435,7 @@ class Wrf(ClioApplication):
         follower.start()
         began = time.monotonic()
         try:
-            codes = self._clio_mpi(self.clio_executable(), cwd=str(run_dir), line_callback=follower, check=False)
+            codes = self._mpi(self.clio_program, str(run_dir), follower)
         finally:
             follower.stop()
         try:
@@ -446,7 +485,7 @@ class Wrf(ClioApplication):
         """WRF runs to its end time."""
 
     def clean(self) -> None:
-        self._clio_ensure_configured(prepare=False)
+        self._ready()
         for path in self._run_outputs(Path(self.config["run_dir"])):
             if path.exists():
                 path.unlink()

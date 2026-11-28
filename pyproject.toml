@@ -1,15 +1,16 @@
-[build-system]
+﻿[build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "clio-jarvis"
-version = "0.2.0"
+version = "0.3.0"
 description = "JARVIS packages that meet the clio relay package contract: Gray-Scott, WRF, WarpX, LAMMPS, GROMACS and pvserver"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "BSD-3-Clause"}
-# Needs jarvis-cd 4007fd14 or newer (unreleased, after 1.8.1); see README.
+# For the validator CLI and the tests only. Sites never pip install this: they run
+# `jarvis repo add` on the clio_jarvis directory. Needs jarvis-cd relay_ready (after 1.8.1).
 dependencies = ["jarvis-cd>=1.8.1", "pyyaml>=6", "jsonschema>=4.18"]
 
 [project.optional-dependencies]
@@ -19,7 +20,8 @@ test = ["pytest>=7"]
 clio-jarvis = "clio_jarvis.__main__:main"
 
 [tool.setuptools.packages.find]
-where = ["clio_jarvis"]
+where = ["."]
+include = ["clio_jarvis*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.xml", "*.i3d", "*.inputs", "*.lammps", "*.mdp", "*.top", "NOTICE"]

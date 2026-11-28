@@ -1,4 +1,4 @@
-"""The RL40 contract of one clio-jarvis package: load it, check it, and resolve it.
+﻿"""The RL40 contract of one clio-jarvis package: load it, check it, and resolve it.
 
 A package directory holds ``pkg.py`` (a jarvis-cd package), ``contract.yaml``
 (this contract), ``progress.py`` and ``artifacts.py`` (jarvis-cd providers that
@@ -15,7 +15,6 @@ import math
 import os
 import re
 import string
-import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -43,7 +42,7 @@ PARTS: tuple[str, ...] = (
 
 CONTRACT_DIR = Path(__file__).resolve().parent
 REPO_PACKAGES_DIR = CONTRACT_DIR.parent
-REPO_ROOT = REPO_PACKAGES_DIR.parent.parent
+REPO_ROOT = REPO_PACKAGES_DIR.parent
 SCHEMAS_DIR = REPO_ROOT / "schemas"
 
 #: Outputs a viewer follows; every other role is reported once, when the run ends.
@@ -65,80 +64,34 @@ def in_job(environ: Mapping[str, str] | None = None) -> bool:
     return any(values.get(name) for name in _JOB_VARIABLES)
 
 
-def job_cores_per_node(environ: Mapping[str, str] | None = None) -> int | None:
-    """Physical cores per node of the job this process runs in; None outside a job.
-
-    Read on the job's node: ``lscpu`` (or /proc/cpuinfo) for the physical
-    cores, capped by SLURM_CPUS_ON_NODE, the CPUs the allocation grants here,
-    counted in cores rather than hardware threads. The batch shell runs on the
-    first node of a homogeneous partition, so this is the partition's value.
-    This is only the package's default: JARVIS's MPI exec bounds ranks per
-    node by the scheduler's task geometry (jarvis-cd docs/scheduler.md, "Ranks
-    per node inside an allocation"), so the package does not read the task
-    geometry itself.
-    """
-    values = os.environ if environ is None else environ
-    if not in_job(values):
-        return None
-    cores = physical_cores()
-    granted = str(values.get("SLURM_CPUS_ON_NODE") or "").strip()
-    if granted.isdigit() and int(granted) > 0:
-        threads = max(1, (os.cpu_count() or cores) // cores)
-        cores = min(cores, max(1, int(granted) // threads))
-    return cores
-
-
-def _lscpu_cores() -> int:
-    """Distinct (socket, core) pairs from ``lscpu -p=socket,core``; 0 without lscpu."""
-    try:
-        completed = subprocess.run(
-            ["lscpu", "-p=socket,core"], capture_output=True, text=True, timeout=10, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0
-    if completed.returncode != 0:
-        return 0
-    pairs = {line.strip() for line in completed.stdout.splitlines() if line.strip() and not line.startswith("#")}
-    return len(pairs)
-
-
-def physical_cores() -> int:
-    """Physical cores of this host: lscpu, else distinct (package, core) pairs in
-    /proc/cpuinfo, else the CPU count. Call it on the node that runs the ranks."""
-    counted = _lscpu_cores()
-    if counted:
-        return counted
-    pairs: set[tuple[str, str]] = set()
-    try:
-        package = core = ""
-        for line in Path("/proc/cpuinfo").read_text(encoding="ascii", errors="replace").splitlines():
-            key, _, value = line.partition(":")
-            key = key.strip()
-            if key == "physical id":
-                package = value.strip()
-            elif key == "core id":
-                core = value.strip()
-            elif not key and core:
-                pairs.add((package, core))
-                package = core = ""
-        if core:
-            pairs.add((package, core))
-    except OSError:
-        pass
-    return len(pairs) or os.cpu_count() or 1
-
-
 def is_view(output: Mapping[str, Any]) -> bool:
     return output.get("role", VIEW_ROLE) == VIEW_ROLE
 
 
 def _in_case(when: Mapping[str, Any] | None, config: Mapping[str, Any]) -> bool:
-    """Whether every parameter ``when`` names matches its schema; an absent one matches."""
+    """Whether every parameter ``when`` names matches its schema; an absent one matches.
+
+    ``const``, ``enum``, ``minimum`` and ``maximum`` are read here, so a job
+    without jsonschema can evaluate them; other keywords need jsonschema.
+    """
     if not when:
+        return True
+    present = {name: value for name, value in config.items() if name in when and value is not None}
+    simple = {"const", "enum", "minimum", "maximum"}
+    if all(set(rule) <= simple for rule in when.values()):
+        for name, value in present.items():
+            rule = when[name]
+            if "const" in rule and value != rule["const"]:
+                return False
+            if "enum" in rule and value not in rule["enum"]:
+                return False
+            if "minimum" in rule and not value >= rule["minimum"]:
+                return False
+            if "maximum" in rule and not value <= rule["maximum"]:
+                return False
         return True
     import jsonschema
 
-    present = {name: value for name, value in config.items() if name in when and value is not None}
     return jsonschema.Draft202012Validator({"properties": dict(when)}).is_valid(present)
 
 _MENU_TYPES = {
@@ -149,7 +102,7 @@ _MENU_TYPES = {
     "list": "array",
     "dict": "object",
 }
-_HASH_EXCLUDE_DIRS = {"__pycache__", ".pytest_cache"}
+_HASH_EXCLUDE_DIRS = {"__pycache__", ".git"}
 _HASH_EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
 
@@ -271,16 +224,17 @@ def fill(contract_fill: Mapping[str, str], config: Mapping[str, Any]) -> dict[st
 # ---------------------------------------------------------------------------
 
 
-def package_files(pkg_dir: Path, repos: Iterable[str] = ()) -> list[Path]:
-    """Files that define a package's behaviour: its directory, the shared contract code
-    and the Spack repositories its install part names."""
-    roots = [pkg_dir, CONTRACT_DIR, *(REPO_ROOT / repo for repo in repos)]
+def package_files(pkg_dir: Path) -> list[Path]:
+    """Files that define a package's behaviour: its directory, plus the repository's
+    shared ``_*`` files and directories (``_contract``, ``_spack``)."""
+    repo = pkg_dir.parent
+    roots = [pkg_dir, *(child for child in sorted(repo.iterdir()) if child.name.startswith("_"))]
     files: list[Path] = []
     for root in roots:
-        for path in sorted(root.rglob("*")):
+        for path in [root] if root.is_file() else sorted(root.rglob("*")):
             if not path.is_file():
                 continue
-            if any(part in _HASH_EXCLUDE_DIRS for part in path.relative_to(root).parts):
+            if any(part in _HASH_EXCLUDE_DIRS for part in path.relative_to(repo).parts):
                 continue
             if path.suffix in _HASH_EXCLUDE_SUFFIXES:
                 continue
@@ -288,26 +242,21 @@ def package_files(pkg_dir: Path, repos: Iterable[str] = ()) -> list[Path]:
     return files
 
 
-def package_sha256(pkg_dir: Path, repos: Iterable[str] = ()) -> str:
-    """SHA-256 over the package's files, the shared contract code and its Spack recipes,
-    by relative name.
+def package_sha256(pkg_dir: Path) -> str:
+    """The review digest of a package as it sits in a JARVIS repository.
 
-    Relay pins a reviewed package by this value (RL24, RL42).
+    One line per file of :func:`package_files`, ``<sha256> <x|-> <path>``
+    (``x`` when the owner may execute it, the path relative to the
+    repository with ``/``), the lines sorted bytewise and each ended by a
+    newline. Relay computes the same value on the site from the package in
+    the site's JARVIS root and pins a reviewed package by it (RL24, RL42).
     """
-    digest = hashlib.sha256()
-    for path in package_files(pkg_dir, repos):
-        if path.is_relative_to(pkg_dir):
-            root = pkg_dir
-        elif path.is_relative_to(REPO_PACKAGES_DIR):
-            root = REPO_PACKAGES_DIR
-        else:
-            root = REPO_ROOT
-        name = path.relative_to(root).as_posix()
-        content = path.read_bytes()
-        digest.update(name.encode("utf-8") + b"\0")
-        digest.update(str(len(content)).encode("ascii") + b"\0")
-        digest.update(content)
-    return digest.hexdigest()
+    repo = pkg_dir.parent
+    lines = [
+        f"{file_sha256(path)} {'x' if path.stat().st_mode & 0o100 else '-'} {path.relative_to(repo).as_posix()}\n".encode()
+        for path in package_files(pkg_dir)
+    ]
+    return hashlib.sha256(b"".join(sorted(lines))).hexdigest()
 
 
 def file_sha256(path: Path) -> str:
@@ -340,9 +289,9 @@ def read_menu(pkg_dir: Path) -> tuple[str, list[dict[str, Any]]]:
     if cls is None:
         raise ContractError(package, "parameters", f"has no class {class_name} in pkg.py")
     bases = {getattr(base, "id", getattr(base, "attr", "")) for base in cls.bases}
-    if not bases & {"ClioApplication", "ClioService"}:
+    if not bases & {"Application", "Service"}:
         raise ContractError(
-            package, "parameters", f"class {class_name} must subclass ClioApplication or ClioService"
+            package, "parameters", f"class {class_name} must subclass JARVIS's Application or Service"
         )
     method = next(
         (node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_configure_menu"),
@@ -359,6 +308,8 @@ def read_menu(pkg_dir: Path) -> tuple[str, list[dict[str, Any]]]:
             raise ContractError(package, "parameters", "menu entries must be literal dicts")
         entry: dict[str, Any] = {}
         for key_node, value_node in zip(element.keys, element.values):
+            if key_node is None:
+                raise ContractError(package, "parameters", "menu entries must be literal dicts")
             key = ast.literal_eval(key_node)
             if key == "type":
                 entry[key] = getattr(value_node, "id", None)
@@ -385,6 +336,9 @@ def parameters_schema(menu: Iterable[Mapping[str, Any]], refinement: Mapping[str
             prop["default"] = entry["default"]
         if entry.get("choices"):
             prop["enum"] = list(entry["choices"])
+        if entry["name"] in INSTALL_ENTRIES:
+            # The reviewed install part: a run may not change it.
+            prop["const"] = entry.get("default")
         properties[entry["name"]] = prop
     for name, extra in (refinement.get("properties") or {}).items():
         properties[name] = {**properties[name], **extra}
@@ -425,6 +379,8 @@ class Contract:
     class_name: str
     menu: list[dict[str, Any]]
     sha256: str = field(default="")
+    #: False when loaded in a job without the schema checks (see load_contract).
+    checked: bool = field(default=True)
 
     @property
     def package(self) -> str:
@@ -446,42 +402,8 @@ class Contract:
         return {entry["name"]: entry.get("default") for entry in self.menu}
 
     def install_options(self) -> list[dict[str, Any]]:
-        """The install block's first entry, then its alternatives."""
+        """The install part's first entry, then its alternatives."""
         return install_options(self.data["install"])
-
-    def install(self) -> dict[str, Any]:
-        """The install part as jarvis-cd menu values.
-
-        Spack repositories are POSIX paths relative to the package directory
-        (the one holding pkg.py), such as ``../../../spack``. jarvis-cd
-        resolves them against that directory wherever the package is loaded,
-        which is the site the job runs on, so no host's absolute path is
-        stored. With alternatives, ``install_method`` stays empty and
-        ``install_methods`` lists them all, so JARVIS picks the one this site
-        fits and asks the person when several do.
-        """
-        options = [self._menu_option(option) for option in self.install_options()]
-        first = options[0]
-        values: dict[str, Any] = {
-            "install_method": first["method"] if len(options) == 1 else "",
-            "install_query": first["query"],
-            "install_repos": first.get("repos", []),
-        }
-        if "channels" in first:
-            values["install_channels"] = first["channels"]
-        if len(options) > 1:
-            values["install_methods"] = options
-        return values
-
-    def _menu_option(self, option: Mapping[str, Any]) -> dict[str, Any]:
-        entry: dict[str, Any] = {"method": option["method"], "query": option["query"]}
-        if "repos" in option:
-            entry["repos"] = [
-                Path(os.path.relpath(REPO_ROOT / repo, self.pkg_dir)).as_posix() for repo in option["repos"]
-            ]
-        if "channels" in option:
-            entry["channels"] = list(option["channels"])
-        return entry
 
     def _described_install(self) -> dict[str, Any]:
         """The install part as relay reads it: the first option, then its alternatives."""
@@ -585,7 +507,8 @@ class Contract:
         descriptor["producer"] = {"package": self.pkg_type, "version": self.version}
         if self.sha256:
             descriptor["producer"]["sha256"] = self.sha256
-        validate_view_descriptor(descriptor)
+        if self.checked:
+            validate_view_descriptor(descriptor)
         return descriptor
 
     def output_record(self, output: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
@@ -606,19 +529,6 @@ class Contract:
             if output["name"] == name:
                 return output
         raise KeyError(name)
-
-    def input_digests(self, config: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """SHA-256 of every input file the provenance part names (RL16)."""
-        digests = []
-        for template in self.data["provenance"]["inputs"]:
-            path = Path(render(template, config))
-            digests.append(
-                {
-                    "path": str(path),
-                    "sha256": file_sha256(path) if path.is_file() else None,
-                }
-            )
-        return digests
 
     def describe(
         self, config: Mapping[str, Any] | None = None, placement: Mapping[str, Any] | None = None
@@ -698,8 +608,14 @@ class Contract:
         }
 
 
-def load_contract(pkg_dir: str | Path) -> Contract:
-    """Load and check one package. Raises :class:`ContractError` naming the missing part."""
+def load_contract(pkg_dir: str | Path, *, check: bool = True) -> Contract:
+    """Load and check one package. Raises :class:`ContractError` naming the missing part.
+
+    With ``check`` false the schema and semantic checks are skipped, so the
+    progress and artifact providers run in a job whose JARVIS has no
+    jsonschema. Relay checks the package before it submits, and the digest
+    pins what it checked.
+    """
     pkg_dir = Path(pkg_dir).resolve()
     package = pkg_dir.name
     contract_path = pkg_dir / "contract.yaml"
@@ -710,8 +626,18 @@ def load_contract(pkg_dir: str | Path) -> Contract:
     data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ContractError(package, "parameters", "contract.yaml is not a mapping")
+    if "install" in data:
+        raise ContractError(
+            package, "install", "belongs in pkg.py's menu (install_method, install_query, install_repos), not contract.yaml"
+        )
+    class_name, menu = read_menu(pkg_dir)
+    data["install"] = install_from_menu(package, menu)
 
     kind = data.get("kind")
+    if not check:
+        return Contract(
+            pkg_dir=pkg_dir, data=data, class_name=class_name, menu=menu, sha256=package_sha256(pkg_dir), checked=False
+        )
     for part in PARTS:
         if part == "service" and kind != "service":
             continue
@@ -729,27 +655,58 @@ def load_contract(pkg_dir: str | Path) -> Contract:
     if data["package"] != package:
         raise ContractError(package, "parameters", f"names package {data['package']!r}, not {package!r}")
 
-    class_name, menu = read_menu(pkg_dir)
     contract = Contract(pkg_dir=pkg_dir, data=data, class_name=class_name, menu=menu)
     _check_semantics(contract)
-    contract.sha256 = package_sha256(pkg_dir, spack_repos(data["install"]))
+    contract.sha256 = package_sha256(pkg_dir)
     return contract
+
+
+#: Menu entries that hold the install part; jarvis-cd's installer reads them.
+INSTALL_ENTRIES = ("install_method", "install_query", "install_repos", "install_channels", "install_methods")
+
+
+def install_from_menu(package: str, menu: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """The install part, read from the menu defaults pkg.py gives jarvis-cd.
+
+    One option comes from install_method, install_query, install_repos and
+    install_channels; alternatives come from install_methods, first entry
+    first. Spack repos stay relative to the package directory, as jarvis-cd
+    resolves them.
+    """
+    values = {entry.get("name"): entry.get("default") for entry in menu}
+    listed = values.get("install_methods") or []
+    if listed:
+        raw = [dict(option) for option in listed]
+    else:
+        raw = [
+            {
+                "method": values.get("install_method"),
+                "query": values.get("install_query"),
+                "repos": values.get("install_repos") or [],
+                "channels": values.get("install_channels") or [],
+            }
+        ]
+    options = []
+    for option in raw:
+        method, query = option.get("method"), option.get("query")
+        if not method or not query:
+            raise ContractError(
+                package, "install", "pkg.py's menu needs install_method and install_query defaults (or install_methods)"
+            )
+        entry: dict[str, Any] = {"method": method, "query": query}
+        if method == "spack":
+            entry["repos"] = list(option.get("repos") or [])
+        if method == "conda" and option.get("channels"):
+            entry["channels"] = list(option["channels"])
+        options.append(entry)
+    first, *rest = options
+    return {**first, "alternatives": rest} if rest else first
 
 
 def install_options(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
     """An install block's first entry, then its alternatives, each without alternatives."""
     first = {key: value for key, value in spec.items() if key != "alternatives"}
     return [first, *(dict(option) for option in spec.get("alternatives") or [])]
-
-
-def spack_repos(spec: Mapping[str, Any]) -> list[str]:
-    """The Spack repositories every install option names, in order, once each."""
-    repos: list[str] = []
-    for option in install_options(spec):
-        for repo in option.get("repos") or []:
-            if repo not in repos:
-                repos.append(repo)
-    return repos
 
 
 #: Names a pip or conda query must not install: an MPI (conda's mpi4py pulls one in).
@@ -771,7 +728,7 @@ def _check_install(contract: Contract) -> None:
         raise ContractError(package, "install", f"lists the method {duplicated[0]!r} twice")
     for option in contract.install_options():
         if option["method"] == "spack":
-            _check_spack(package, option)
+            _check_spack(package, option, contract.pkg_dir)
         elif option["method"] in ("pip", "conda"):
             _check_package_manager(contract, option)
 
@@ -793,19 +750,28 @@ def _check_package_manager(contract: Contract, option: Mapping[str, Any]) -> Non
             )
 
 
-def _check_spack(package: str, spec: Mapping[str, Any]) -> None:
+def _check_spack(package: str, spec: Mapping[str, Any], pkg_dir: Path) -> None:
     match = _MPI_PROVIDERS.search(spec["query"])
     if match:
         raise ContractError(
             package, "install", f"query pins the MPI {match.group(1)!r}; depend on the mpi virtual only"
         )
+    repo_dir = pkg_dir.parent.resolve()
+    paths = []
     for repo in spec["repos"]:
-        path = REPO_ROOT / repo
+        path = (pkg_dir / repo).resolve()
+        inside = path.is_relative_to(repo_dir) and path != repo_dir
+        # Only top-level _ directories are in the review digest.
+        if Path(repo).is_absolute() or not inside or not path.relative_to(repo_dir).parts[0].startswith("_"):
+            raise ContractError(
+                package, "install", f"repo {repo!r} must be a relative path to a top-level _ directory of this repository"
+            )
         if not (path / "repo.yaml").is_file() or not (path / "packages").is_dir():
             raise ContractError(package, "install", f"repo {repo!r} is not a Spack repository")
+        paths.append(path)
     root = re.match(r"\s*([A-Za-z0-9_.-]+)", spec["query"])
     name = root.group(1).split(".")[-1] if root else ""
-    in_repos = any((REPO_ROOT / repo / "packages" / name / "package.py").is_file() for repo in spec["repos"])
+    in_repos = any((path / "packages" / name / "package.py").is_file() for path in paths)
     if spec["repos"] and not in_repos and name not in _BUILTIN_ROOTS:
         raise ContractError(package, "install", f"no recipe for {name!r} in {spec['repos']}")
 

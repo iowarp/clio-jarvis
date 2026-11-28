@@ -9,11 +9,6 @@ summary: >-
   run goes, and with checkpoint_freq set, a checkpoint (ckpt.bp) it can
   restart from. On every node with solver ranks a flusher syncs gs.bp each
   second, so a viewer on another node sees each step as it lands.
-install:
-  method: spack
-  # MPI stays the mpi virtual, so the site's MPI is reused.
-  query: gray-scott@2.10.2 +clio ^adios2+mpi
-  repos: [spack]
 
 parameters:
   required: [nprocs, L, steps, plotgap]
@@ -96,7 +91,7 @@ provenance:
   upstream:
     - name: >-
         ADIOS2 v2.10.2 examples/simulations/gray-scott, built by the Spack
-        recipe clio.gray-scott +clio in spack/, whose patch() method adds the
+        recipe clio.gray-scott +clio in _spack/, whose patch() method adds the
         simulation time to vtk.xml
       version: "2.10.2"
       url: https://github.com/ornladios/ADIOS2/tree/v2.10.2/examples/simulations/gray-scott

@@ -31,13 +31,6 @@ summary: >-
   client can rejoin and rebuild its scene; the ready record counts crashes
   with the last one's output, and the stop record lists every crash.
 
-install:
-  method: spack
-  # Spack's builtin paraview recipe; MPI stays the mpi virtual, so the site's
-  # MPI and Mesa are reused. 5.13.1 matches the CLIO ParaView MCP client.
-  query: paraview@5.13.1 +mpi +adios2 +python ~qt ^[virtuals=gl] osmesa
-  repos: []
-
 parameters:
   required: [nprocs, port]
   properties:

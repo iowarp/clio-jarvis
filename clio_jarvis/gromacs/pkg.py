@@ -42,7 +42,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from clio_jarvis._contract.base import ClioApplication, mpi_safe_env
+from jarvis_cd.core.pkg import Application
 from clio_jarvis._contract.points import write_points_vtp
 from clio_jarvis._contract.publisher import PollingPublisher
 from jarvis_cd.shell import Exec, LocalExecInfo, MpiExecInfo
@@ -270,15 +270,42 @@ class TrrPublisher(PollingPublisher):
                 )
 
 
-class Gromacs(ClioApplication):
+class Gromacs(Application):
     """GROMACS on the person's own mdp, structure and topology, with a growing series of frames."""
 
     clio_program = "gmx_mpi"
-    clio_probe_arguments = None
-    clio_capabilities = ("mpi_execution", "gromacs", "particle_frames")
+
+    def run_dir(self) -> Path:
+        return Path(self.config.get("run_dir") or Path(str(self.shared_dir)) / "run")
+
+    def _ready(self) -> dict[str, Any]:
+        """The config with run_dir filled, as the run and the progress providers read it."""
+        self.config["run_dir"] = str(self.run_dir())
+        return self.config
+
+    def ppn(self) -> int | None:
+        """ppn, else cores_per_node; None leaves it to JARVIS's MPI launch inside the allocation."""
+        for name in ("ppn", "cores_per_node"):
+            value = self.config.get(name)
+            if value not in (None, ""):
+                return int(value)
+        return None
+
+    def _runs_here(self) -> bool:
+        """True when the ranks run on this host only (no hostfile, or a local one)."""
+        hostfile = self.hostfile
+        return hostfile is None or not len(hostfile) or hostfile.is_local()
+
+    def _configure(self, **kwargs: Any) -> None:
+        """Write the run's input files on the configuring host, where relative paths are meant."""
+        super()._configure(**kwargs)
+        self._prepare(self._ready())
 
     def _configure_menu(self) -> list[dict[str, Any]]:
         return [
+            {"name": "install_method", "msg": "Installer for gromacs", "type": str, "default": "spack"},
+            {"name": "install_query", "msg": "Spack spec; MPI stays the mpi virtual, so the site's MPI is reused, and the builtin recipe builds gmx_mpi with FFTW and OpenMP", "type": str, "default": "gromacs@2024.3 +mpi"},
+            {"name": "install_repos", "msg": "Spack repositories beyond the builtin one, relative to the package directory", "type": list, "default": []},
             {"name": "nprocs", "msg": "MPI processes of each mdrun; GROMACS splits the box over them by domain decomposition (see the contract's sizing)", "type": int, "default": 8},
             {
                 "name": "ppn",
@@ -352,7 +379,7 @@ class Gromacs(ClioApplication):
         for name in str(self.config.get("files") or "").split():
             shutil.copyfile(name, run_dir / Path(name).name)
 
-    def _clio_prepare(self, config: dict[str, Any]) -> None:
+    def _prepare(self, config: dict[str, Any]) -> None:
         nsteps, interval = int(config["nsteps"]), int(config["frame_interval"])
         if nsteps % interval:
             raise ValueError(f"nsteps {nsteps} must be a whole number of frame_interval {interval}")
@@ -412,7 +439,7 @@ class Gromacs(ClioApplication):
 
     def _env(self) -> dict[str, str]:
         # GROMACS would back an overwritten file up as #name.1#; the stages overwrite on purpose.
-        return {**mpi_safe_env(self.mod_env), "GMX_MAXBACKUP": "-1"}
+        return {**dict(self.mod_env or {}), "GMX_MAXBACKUP": "-1"}
 
     def _gmx(self, args: list[str], run_dir: Path, stdin: str | None = None, line_callback=None) -> dict[str, int]:
         """One gmx tool: mdrun on all the ranks, any other tool on one."""
@@ -421,7 +448,7 @@ class Gromacs(ClioApplication):
         extra = ["-ntomp", str(int(self.config["ntomp"]))] if mdrun and "-ntomp" not in args else []
         callback = line_callback if line_callback is not None else self.runtime_line_callback()
         if program == "gmx":
-            if mdrun and not self._clio_runs_here():
+            if mdrun and not self._runs_here():
                 raise RuntimeError("this GROMACS is a thread-MPI build (gmx, no gmx_mpi), which runs on one node only")
             if mdrun and "-ntmpi" not in args:
                 extra += ["-ntmpi", str(int(self.config["nprocs"]))]
@@ -430,7 +457,7 @@ class Gromacs(ClioApplication):
             ranks = int(self.config["nprocs"]) if mdrun else 1
             info = MpiExecInfo(
                 nprocs=ranks,
-                ppn=self.clio_ppn() if mdrun else 1,
+                ppn=self.ppn() if mdrun else 1,
                 hostfile=self.hostfile,
                 env=self._env(),
                 cwd=str(run_dir),
@@ -456,7 +483,7 @@ class Gromacs(ClioApplication):
         return {host: code for host, code in codes.items() if code != 0}
 
     def start(self) -> None:
-        self._clio_ensure_configured(prepare=True)
+        self._ready()
         run_dir = Path(self.config["run_dir"])
         # A rerun starts a fresh series; a viewer must not see the last run's frames.
         self._remove_outputs(run_dir)
@@ -549,6 +576,6 @@ class Gromacs(ClioApplication):
         """mdrun runs to nsteps."""
 
     def clean(self) -> None:
-        self._clio_ensure_configured(prepare=False)
+        self._ready()
         self._remove_outputs(Path(self.config["run_dir"]))
 

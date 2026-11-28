@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from clio_jarvis._contract import spec
 from clio_jarvis._contract.spec import (
     PARTS,
     REPO_PACKAGES_DIR,
@@ -155,6 +156,8 @@ def test_pvserver_keeps_jarvis_after_steps_default():
 def _copy(package: str, tmp_path: Path) -> Path:
     target = tmp_path / package
     shutil.copytree(REPO_PACKAGES_DIR / package, target, ignore=shutil.ignore_patterns("__pycache__"))
+    if not (tmp_path / "_spack").exists():
+        shutil.copytree(REPO_PACKAGES_DIR / "_spack", tmp_path / "_spack")
     return target
 
 
@@ -320,26 +323,37 @@ def test_transport_warnings_are_told_from_errors():
     assert transport.TransportNotes().report() is None
 
 
-def test_gray_scott_ranks_start_through_the_node_flusher(tmp_path):
+def test_gray_scott_ranks_start_through_the_node_flusher(tmp_path, monkeypatch):
     import shlex
 
     from clio_jarvis._contract import flushwrap
+    from clio_jarvis.gray_scott import pkg
     from clio_jarvis.gray_scott.pkg import FLUSH_SECONDS, GrayScott
 
     seen = {}
+
+    class FakeExec:
+        def __init__(self, command, info):
+            seen.update(command=command, cwd=info.cwd, nprocs=info.nprocs, ppn=info.ppn)
+
+        def run(self):
+            return type("Done", (), {"exit_code": {"localhost": 0}})()
+
+    monkeypatch.setattr(pkg, "Exec", FakeExec)
+    for name, value in (("hostfile", None), ("mod_env", {}), ("runtime_line_callback", lambda self: None)):
+        monkeypatch.setattr(GrayScott, name, value, raising=False)
     package = GrayScott.__new__(GrayScott)
-    package.config = {"run_dir": str(tmp_path / "run")}
-    package._clio_ensure_configured = lambda prepare: None
-    package.clio_executable = lambda: "/opt/gs dir/gray-scott"
-    package._clio_mpi = lambda command, cwd: seen.update(command=command, cwd=cwd)
+    _, menu = spec.read_menu(REPO_PACKAGES_DIR / "gray_scott")
+    package.config = {**{entry["name"]: entry.get("default") for entry in menu}, "run_dir": str(tmp_path / "run"), "ppn": 4}
     package.start()
     words = shlex.split(seen["command"])
-    assert seen["cwd"] == str(tmp_path / "run")
+    assert seen["cwd"] == str(tmp_path / "run") and seen["ppn"] == 4
     assert words[:2] == [sys.executable, os.path.abspath(flushwrap.__file__)]
     args = flushwrap.parse(words[2:])
     assert args.output == str(tmp_path / "run" / "gs.bp") and args.every == FLUSH_SECONDS
     assert args.first == ["data.*"] and args.last == ["md.0", "mmd.0", "md.idx"]
-    assert args.program == ["/opt/gs dir/gray-scott", "settings.json"]
+    assert args.program == ["adios2_simulations_gray-scott", "settings.json"]
+    assert json.loads((tmp_path / "run" / "settings.json").read_text())["output"] == str(tmp_path / "run" / "gs.bp")
 
 
 def _supervisor_module():
@@ -823,82 +837,100 @@ def test_supervisor_lingers_on_sigusr1(tmp_path, ending):
         assert record["reason"] == "signal" and took < 20
 
 
-def _with_install(package: str, tmp_path: Path, install: dict) -> Path:
+def _with_install(package: str, tmp_path: Path, monkeypatch, entries: list[dict]) -> Path:
+    """A copy of the package whose menu gives these install entries instead of its own."""
     pkg_dir = _copy(package, tmp_path)
-    path = pkg_dir / "contract.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data["install"] = install
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    class_name, menu = spec.read_menu(REPO_PACKAGES_DIR / package)
+    menu = [entry for entry in menu if entry["name"] not in spec.INSTALL_ENTRIES] + entries
+    monkeypatch.setattr(spec, "read_menu", lambda _pkg_dir: (class_name, menu))
     return pkg_dir
 
 
+def _entries(method: str, query: str, repos: list | None = None, channels: list | None = None) -> list[dict]:
+    entries = [
+        {"name": "install_method", "msg": "m", "type": "str", "default": method},
+        {"name": "install_query", "msg": "q", "type": "str", "default": query},
+    ]
+    if repos is not None:
+        entries.append({"name": "install_repos", "msg": "r", "type": "list", "default": repos})
+    if channels is not None:
+        entries.append({"name": "install_channels", "msg": "c", "type": "list", "default": channels})
+    return entries
+
+
+def _methods(options: list[dict]) -> list[dict]:
+    return [{"name": "install_methods", "msg": "o", "type": "list", "default": options}]
+
+
 @pytest.mark.parametrize("package", PACKAGES)
-def test_one_install_method_is_the_menu_default(package):
+def test_the_menu_is_the_install(package):
     contract = load_contract(REPO_PACKAGES_DIR / package)
-    install = contract.install()
-    assert install["install_method"] == contract.data["install"]["method"]
-    assert install["install_query"] == contract.data["install"]["query"]
-    assert "install_methods" not in install
-    assert "alternatives" not in contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
-
-
-def test_alternatives_leave_the_choice_to_jarvis(tmp_path):
-    spack = {"method": "spack", "query": "gray-scott@2.10.2 +clio ^adios2+mpi", "repos": ["spack"]}
-    image = {"method": "container", "query": "ghcr.io/example/gray-scott:2.10.2"}
-    contract = load_contract(_with_install("gray_scott", tmp_path, {**spack, "alternatives": [image]}))
-    install = contract.install()
-    assert install["install_method"] == ""
-    assert [option["method"] for option in install["install_methods"]] == ["spack", "container"]
-    repo = install["install_methods"][0]["repos"][0]
-    assert not os.path.isabs(repo) and (contract.pkg_dir / repo / "repo.yaml").is_file()
-    assert install["install_methods"][1] == image
+    defaults = contract.defaults()
     described = contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
-    assert described["method"] == "spack" and described["alternatives"] == [image]
+    assert described["method"] == defaults["install_method"] == "spack"
+    assert described["query"] == defaults["install_query"]
+    assert described["repos"] == defaults["install_repos"]
+    assert "alternatives" not in described
 
 
-def test_conda_and_pip_alternatives_for_a_non_mpi_code(tmp_path):
-    install = {
-        "method": "spack", "query": "paraview@5.13.1 +python ~qt", "repos": [],
-        "alternatives": [
-            {"method": "conda", "query": "paraview=5.13.1", "channels": ["conda-forge"]},
-            {"method": "pip", "query": "rich==13.7.1"},
-        ],
-    }
-    options = load_contract(_with_install("pvserver", tmp_path, install)).install()["install_methods"]
-    assert options[1] == {"method": "conda", "query": "paraview=5.13.1", "channels": ["conda-forge"]}
-    assert options[2] == {"method": "pip", "query": "rich==13.7.1"}
+def test_an_install_part_in_the_contract_is_refused(tmp_path):
+    pkg_dir = _copy("gray_scott", tmp_path)
+    path = pkg_dir / "contract.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["install"] = {"method": "spack", "query": "gray-scott", "repos": []}
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ContractError, match="pkg.py's menu") as caught:
+        load_contract(pkg_dir)
+    assert caught.value.part == "install"
+
+
+def test_install_methods_list_the_alternatives(tmp_path, monkeypatch):
+    spack_option = {"method": "spack", "query": "gray-scott@2.10.2 +clio ^adios2+mpi", "repos": ["../_spack"]}
+    image = {"method": "container", "query": "ghcr.io/example/gray-scott:2.10.2"}
+    contract = load_contract(_with_install("gray_scott", tmp_path, monkeypatch, _methods([spack_option, image])))
+    described = contract.describe({}, {**CONFIG, "pkg_dir": str(contract.pkg_dir)})["install"]
+    assert described == {**spack_option, "alternatives": [image]}
+    assert (contract.pkg_dir / described["repos"][0] / "repo.yaml").is_file()
+
+
+def test_conda_and_pip_alternatives_for_a_non_mpi_code(tmp_path, monkeypatch):
+    options = [
+        {"method": "spack", "query": "paraview@5.13.1 +python ~qt", "repos": []},
+        {"method": "conda", "query": "paraview=5.13.1", "channels": ["conda-forge"]},
+        {"method": "pip", "query": "rich==13.7.1"},
+    ]
+    contract = load_contract(_with_install("pvserver", tmp_path, monkeypatch, _methods(options)))
+    assert contract.install_options() == options
 
 
 @pytest.mark.parametrize("method", ["pip", "conda"])
-def test_package_managers_never_install_an_mpi_code(method, tmp_path):
-    pkg_dir = _with_install("gray_scott", tmp_path, {"method": method, "query": "gray-scott"})
+def test_package_managers_never_install_an_mpi_code(method, tmp_path, monkeypatch):
+    pkg_dir = _with_install("gray_scott", tmp_path, monkeypatch, _entries(method, "gray-scott"))
     with pytest.raises(ContractError, match="site's MPI") as caught:
         load_contract(pkg_dir)
     assert caught.value.part == "install"
 
 
 @pytest.mark.parametrize("query", ["mpi4py numpy", "conda-forge::openmpi", "mpich>=4"])
-def test_package_managers_never_name_an_mpi(query, tmp_path):
-    install = {"method": "spack", "query": "paraview@5.13.1", "repos": [],
-               "alternatives": [{"method": "conda", "query": query}]}
+def test_package_managers_never_name_an_mpi(query, tmp_path, monkeypatch):
+    options = [{"method": "spack", "query": "paraview@5.13.1", "repos": []}, {"method": "conda", "query": query}]
     with pytest.raises(ContractError, match="names the MPI") as caught:
-        load_contract(_with_install("pvserver", tmp_path, install))
+        load_contract(_with_install("pvserver", tmp_path, monkeypatch, _methods(options)))
     assert caught.value.part == "install"
 
 
 @pytest.mark.parametrize(
-    "install",
+    "entries",
     [
-        {"method": "spack", "query": "paraview@5.13.1"},
-        {"method": "pip", "query": "rich", "repos": []},
-        {"method": "spack", "query": "paraview@5.13.1", "repos": [], "channels": ["conda-forge"]},
-        {"method": "container", "query": "x:1", "channels": ["conda-forge"]},
-        {"method": "apt", "query": "paraview"},
-        {"method": "spack", "query": "paraview@5.13.1", "repos": [],
-         "alternatives": [{"method": "spack", "query": "paraview@5.12", "repos": []}]},
+        _entries("spack", ""),
+        _entries("apt", "paraview"),
+        _entries("spack", "paraview@5.13.1 ^openmpi", repos=[]),
+        _entries("spack", "paraview@5.13.1", repos=["/abs/repo"]),
+        _entries("spack", "paraview@5.13.1", repos=["../gray_scott"]),
+        _methods([{"method": "spack", "query": "paraview@5.13.1"}, {"method": "spack", "query": "paraview@5.12"}]),
     ],
 )
-def test_malformed_install_is_refused(install, tmp_path):
+def test_malformed_install_is_refused(entries, tmp_path, monkeypatch):
     with pytest.raises(ContractError) as caught:
-        load_contract(_with_install("pvserver", tmp_path, install))
+        load_contract(_with_install("pvserver", tmp_path, monkeypatch, entries))
     assert caught.value.part == "install"

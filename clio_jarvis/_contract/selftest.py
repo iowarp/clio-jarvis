@@ -1,15 +1,14 @@
 """Run one package's RL40 self-test through jarvis-cd and check what it reported.
 
 The run uses a private ``JARVIS_ROOT`` under the work directory, so it never
-touches the user's JARVIS state. Steps: ``jarvis init``, ``jarvis repo add``,
-``jarvis ppl load`` of a one-package pipeline with the contract's self-test
-parameters, ``jarvis ppl install +check`` (the package's Spack install must
-already be satisfied; the self-test never builds it), ``jarvis ppl run`` with a
-known execution id. The checks then read
-the execution's progress and artifact records, the package's
-``clio-contract.json``, the output itself through ParaView's reader (when
-``pvpython`` from ParaView's Spack install is on PATH), and the package's own
-``selftest.py``.
+touches the user's JARVIS state. Steps: ``jarvis init``, ``jarvis repo rm
+builtin``, ``jarvis repo add``, ``jarvis ppl load`` of a one-package pipeline
+with the contract's self-test parameters, ``jarvis ppl install +check`` (the
+package's Spack install must already be satisfied; the self-test never builds
+it), ``jarvis ppl run`` with a known execution id. The checks then read the
+execution's progress and artifact records, the output itself through
+ParaView's reader (when ``pvpython`` from ParaView's Spack install is on
+PATH), and the package's own ``selftest.py``.
 """
 
 from __future__ import annotations
@@ -200,7 +199,7 @@ class SelfTest:
             root = self.execution_root()
             if not report.check("execution directory exists", root is not None, str(root)):
                 return self._finish(started)
-            config = self._check_record(root)
+            config = self._resolved_config()
             progress = read_jsonl(sorted((root / "progress").glob("*.jsonl")))
             artifacts = read_jsonl(sorted((root / "artifacts").glob("*.jsonl")))
             report.facts["progress_events"] = len(progress)
@@ -231,6 +230,9 @@ class SelfTest:
         result = self.jarvis("init", str(root / "config"), str(root / "private"), str(root / "shared"), log="jarvis-init.log")
         if not report.check("jarvis init", result.returncode == 0, result.stderr[-400:] if result.returncode else None):
             raise CheckFailed("jarvis init failed")
+        result = self.jarvis("repo", "rm", "builtin", log="jarvis-repo-rm.log")
+        if not report.check("jarvis repo rm builtin", result.returncode == 0, result.stderr[-400:] if result.returncode else None):
+            raise CheckFailed("jarvis repo rm builtin failed")
         result = self.jarvis("repo", "add", str(REPO_DIR), log="jarvis-repo-add.log")
         if not report.check("jarvis repo add", result.returncode == 0, result.stderr[-400:] if result.returncode else None):
             raise CheckFailed("jarvis repo add failed")
@@ -275,23 +277,20 @@ class SelfTest:
 
     # -- checks ------------------------------------------------------------------
 
-    def _check_record(self, root: Path) -> dict[str, Any]:
+    def _resolved_config(self) -> dict[str, Any]:
+        """The run's configuration: the self-test parameters with the contract's defaults and fills.
+
+        The fills need the package's shared directory, which JARVIS reports.
+        """
         report = self.report
-        records = sorted(root.rglob("clio-contract.json"))
-        if not report.check("clio-contract.json written", bool(records), [str(p) for p in records]):
-            raise CheckFailed("no clio-contract.json")
-        document = json.loads(records[0].read_text(encoding="utf-8"))
-        report.check("record schema", document.get("schema") == "clio.package-resolved.v1", document.get("schema"))
-        report.check(
-            "record pins the package sha256",
-            document.get("sha256") == self.contract.sha256,
-            document.get("sha256"),
-        )
-        inputs = document.get("inputs") or []
-        missing = [item["path"] for item in inputs if not item.get("sha256")]
-        report.check("every provenance input has a digest", not missing, missing or f"{len(inputs)} inputs")
-        report.facts["resources"] = document.get("resources")
-        return dict(document.get("config") or {})
+        result = self.jarvis("pkg", "path", f"{self.pipeline}.{self.package}", "+shared")
+        shared = result.stdout.strip().splitlines()[-1].strip() if result.returncode == 0 and result.stdout.strip() else ""
+        if not report.check("jarvis pkg path +shared", bool(shared), shared or result.stderr[-400:]):
+            raise CheckFailed("no shared directory for the package")
+        config = self.contract.resolve_config(self.params, {"shared_dir": shared})
+        self.contract.check_parameters(config)
+        report.facts["resources"] = self.contract.resources(config)
+        return config
 
     def _check_application(
         self, progress: list[dict[str, Any]], artifacts: list[dict[str, Any]], config: Mapping[str, Any]

@@ -25,12 +25,6 @@ summary: >-
   nothing passes through the person's computer. The reference output
   wrfout_d01_2019-11-27_00:00:00.gnu with diffwrf.py checks a full 12 h run.
   Keep case data outside the relay home, which a site clean deletes.
-install:
-  method: spack
-  # MPI stays the mpi virtual, so the site's MPI and any site WRF are reused.
-  query: wrf@4.6.1 build_type=dmpar compile_type=em_real
-  repos: []
-
 parameters:
   required: [nprocs, case_dir, run_minutes, history_interval]
   properties:
